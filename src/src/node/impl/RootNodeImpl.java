@@ -9,6 +9,7 @@ import log.WriteAheadLog;
 import node.MasterNode;
 import node.Node;
 import node.RootNode;
+import server.ProxyServer;
 import util.RandomInteger;
 
 import java.time.LocalDateTime;
@@ -30,6 +31,7 @@ public class RootNodeImpl implements Runnable, RootNode, MasterNode {
     private final Object leaderLock = new Object();
     private final Object readReplicaImplsLock = new Object();
     private boolean isActive;
+    private final ProxyServer proxyServer;
 
     private WriteAheadLog startWriteAheadLogThread(int numberOfNodes) {
         WriteAheadLog writeAheadLog = new WriteAheadLog(numberOfNodes);
@@ -38,7 +40,8 @@ public class RootNodeImpl implements Runnable, RootNode, MasterNode {
         return writeAheadLog;
     }
 
-    public RootNodeImpl(String rootName, int numberOfNodes) {
+    public RootNodeImpl(String rootName, int numberOfNodes, ProxyServer proxyServer) {
+        this.proxyServer = proxyServer;
         this.rootName = rootName;
         this.heartBeat = new ConcurrentHashMap<>();
         this.replicaNodeImpls = Collections.synchronizedList(new ArrayList<>());
@@ -47,18 +50,18 @@ public class RootNodeImpl implements Runnable, RootNode, MasterNode {
         this.isActive = true;
         this.writeAheadLog = new WriteAheadLog(numberOfNodes);
         Thread writeAheadLogThread = new Thread(this.writeAheadLog);
-        writeAheadLogThread.start();
+//        writeAheadLogThread.start();
 
         this.leaderNodeImpl = new NodeImpl("NodeImpl - 1", NodeType.LEADER, this);
         Thread leaderNodeImplThread = new Thread(this.leaderNodeImpl);
-        leaderNodeImplThread.start();
+//        leaderNodeImplThread.start();
         this.heartBeat.put(this.leaderNodeImpl, LocalDateTime.now());
         this.activeNodes.put(this.leaderNodeImpl, true);
         this.replicaNodeImpls.add(this.leaderNodeImpl);
         for (int i = 0; i < numberOfNodes - 1; i++) {
             Node nodeImpl = new NodeImpl("NodeImpl - " + Integer.toString(i + 2), NodeType.REPLICA, this);
             Thread nodeImplThread = new Thread(nodeImpl);
-            nodeImplThread.start();
+//            nodeImplThread.start();
             this.heartBeat.put(nodeImpl,  LocalDateTime.now());
             this.activeNodes.put(nodeImpl, true);
             this.replicaNodeImpls.add(nodeImpl);
@@ -93,8 +96,10 @@ public class RootNodeImpl implements Runnable, RootNode, MasterNode {
                     for (var x : heartBeat.entrySet()) {
                         Node nodeImpl = x.getKey();
                         LocalDateTime time = x.getValue();
-                        if(!activeNodes.get(nodeImpl)) {
-                            continue;
+                        synchronized (readReplicaImplsLock) {
+                            if(!activeNodes.get(nodeImpl)) {
+                                continue;
+                            }
                         }
                         long secondsDifference = time.until(LocalDateTime.now(), ChronoUnit.SECONDS);
                         System.out.printf("[%s]: %s -> %d %d\n", this.rootName, nodeImpl.getNodeName(), secondsDifference, NodeConfig.heartBeatLimitTime);
@@ -131,7 +136,7 @@ public class RootNodeImpl implements Runnable, RootNode, MasterNode {
                     try {
                         Thread.sleep(NodeConfig.waitingTimeIfNodeInactive);
                     } catch (InterruptedException e) {
-                        throw new RuntimeException(e);
+                        System.out.println("Exception: " + e.getMessage());
                     }
                     System.out.printf("[%s]: updateHeartBeatThread, Waiting for at least one database node to be active\n", this.rootName);
                 }
@@ -146,6 +151,29 @@ public class RootNodeImpl implements Runnable, RootNode, MasterNode {
         });
         updateDataInReplica.setDaemon(true);
         updateDataInReplica.start();
+        Thread updateHeartBeatToProxyServer = new Thread(() -> {
+            System.out.printf("[%s]: Starting a daemon thread to send a heart beat to the proxy server to indicate the " +
+                    "root node is active\n", this.rootName);
+            while (true) {
+                while (!isActive) {
+                    try {
+                        Thread.sleep(NodeConfig.waitingTimeIfNodeInactive);
+                    } catch (InterruptedException e) {
+                        System.out.println("Exception: " + e.getMessage());
+                    }
+                    System.out.printf("[%s]: Waiting for at-least one database node to become active\n", this.rootName);
+                }
+                try {
+                    Thread.sleep(NodeConfig.heartBeatWaitingTime);
+                    System.out.printf("[%s]: Sending a heart beat request to the proxy server\n", this.rootName);
+                    this.proxyServer.updateHeartBeat(this);
+                } catch (InterruptedException e) {
+                    System.out.println("Exception: " + e.getMessage());
+                }
+            }
+        });
+        updateHeartBeatToProxyServer.setDaemon(true);
+        updateHeartBeatToProxyServer.start();
     }
 
     /**
@@ -256,6 +284,15 @@ public class RootNodeImpl implements Runnable, RootNode, MasterNode {
             }
             writeAheadLog.updateTheReplicaNode(nodeImpl);
         }
+    }
+
+    /**
+     * The method return the name of the root node.
+     * @return : String
+     */
+    @Override
+    public String getRootNodeName() {
+        return this.rootName;
     }
 
     /**
