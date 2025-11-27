@@ -7,7 +7,6 @@ import exception.InActiveNodeException;
 import exception.RootNodeDownException;
 import log.WriteAheadLog;
 import node.EscalatingNode;
-import node.MasterNode;
 import node.Node;
 import node.RootNode;
 import server.ProxyServer;
