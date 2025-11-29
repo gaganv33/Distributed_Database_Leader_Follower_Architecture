@@ -4,26 +4,29 @@ import config.NodeConfig;
 import config.NodeType;
 import exception.DataNotFoundException;
 import exception.InActiveNodeException;
-import node.Node;
+import node.EscalatingNode;
 import node.RootNode;
 import util.RandomInteger;
 
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ConcurrentSkipListMap;
 
-public class NodeImpl implements Node {
+public class NodeImpl implements EscalatingNode {
     private final String nodeName;
     private NodeType nodeType;
     private final RootNode rootNodeImpl;
-    private final ConcurrentHashMap<String, String> data;
+    private final ConcurrentMap<String, String> data;
     private boolean isActive;
     private final Object lock = new Object();
+    private boolean isSynced;
 
     public NodeImpl(String nodeName, NodeType nodeType, RootNode rootNodeImpl) {
         this.nodeName = nodeName;
         this.nodeType = nodeType;
         this.rootNodeImpl = rootNodeImpl;
-        this.data = new ConcurrentHashMap<>();
+        this.data = new ConcurrentSkipListMap<>();
         this.isActive = true;
+        this.isSynced = true;
     }
 
     /**
@@ -32,11 +35,8 @@ public class NodeImpl implements Node {
      */
     @Override
     public void escalateNodeFromReplicaToLeader() {
-        synchronized (lock) {
-            System.out.printf("[%s]: escalating to leader node\n", this.nodeName);
-            this.nodeType = NodeType.LEADER;
-            this.isActive = true;
-        }
+        System.out.printf("[%s]: escalating replica node to leader node\n", this.nodeName);
+        this.nodeType = NodeType.LEADER;
     }
 
     /**
@@ -45,12 +45,8 @@ public class NodeImpl implements Node {
      */
     @Override
     public void deescalateNodeFromLeaderToReplica() {
-        synchronized (lock) {
-            this.rootNodeImpl.notifyReplica();
-            System.out.printf("[%s]: De escalate to replica node\n", this.nodeName);
-            this.nodeType = NodeType.REPLICA;
-            this.isActive = false;
-        }
+        System.out.printf("[%s]: De escalate leader node to replica node\n", this.nodeName);
+        this.nodeType = NodeType.REPLICA;
     }
 
     /**
@@ -96,6 +92,26 @@ public class NodeImpl implements Node {
     }
 
     /**
+     * This method is responsible to remove the value for the corresponding key.
+     * @param key : The corresponding key to the value, that has to be removed from the database.
+     * @throws InActiveNodeException : This exception is thrown whn this node is inactive and not able to respond to
+     *                                 the request.
+     */
+    @Override
+    public void deleteData(String key) throws InActiveNodeException {
+        synchronized (lock) {
+            if(!this.isActive) {
+                throw new InActiveNodeException("The node is inactive");
+            }
+            data.remove(key);
+            // Maintaining a write ahead log to store the records which has to be replicated in the replica nodes, the
+            // replication id done asynchronously using a daemon thread running in the RootNode.
+            // A WriteAheadLog is maintained so that only the recent updates are replicated in the replica node.
+            this.rootNodeImpl.updateLog(key);
+        }
+    }
+
+    /**
      * This method is responsible for starting a daemon thread, and it will send a heart beat request frequently to
      * the root node. The heart beat indicates that this database node is active and can respond to the requests.
      * It also runs a while loop which does not end, for scaling up and down the node.
@@ -112,9 +128,18 @@ public class NodeImpl implements Node {
                     try {
                         Thread.sleep(NodeConfig.waitingTimeIfNodeInactive);
                     } catch (InterruptedException e) {
-                        System.out.println("Exception: " + e.getMessage());
+                        System.out.printf("[%s]: Exception heartBeatThread: %s\n", this.nodeName, e.getMessage());
                     }
                     System.out.printf("[%s]: The node is waiting to be active\n", this.nodeName);
+                }
+                // Waiting until the complete sync is done with the leader done.
+                while (!isSynced) {
+                    try {
+                        Thread.sleep(NodeConfig.waitingTimeWhileSyncing);
+                    } catch (InterruptedException e) {
+                        System.out.printf("[%s]: Exception heartBeatThread: %s\n", this.nodeName, e.getMessage());
+                    }
+                    System.out.printf("[%s]: Database node syncing with the latest data in progress\n", this.nodeName);
                 }
                 try {
                     Thread.sleep(NodeConfig.heartBeatWaitingTime);
@@ -122,7 +147,7 @@ public class NodeImpl implements Node {
                     System.out.printf("[%s]: Sending heart beat message to the root node\n", this.nodeName);
                     rootNodeImpl.updateHeartBeat(this);
                 } catch (InterruptedException e) {
-                    System.out.println("Exception: " + e.getMessage());
+                    System.out.printf("[%s]: Exception heartBeatThread: %s\n", this.nodeName, e.getMessage());
                 }
             }
         });
@@ -135,17 +160,43 @@ public class NodeImpl implements Node {
                 synchronized (lock) {
                     if(this.isActive) {
                         scalingDown();
+                        setDatabaseIsNotSynced();
                     } else {
                         scalingUp();
-                        Thread.sleep(1000);
-                        System.out.printf("[%s]: Syncing this database node with the latest data\n", this.nodeName);
-                        rootNodeImpl.updateANodeWhichHasJustComeActive(this);
+                        syncNodeWithTheLatestData();
                     }
                 }
             } catch (InterruptedException e) {
-                System.out.println("Exception: " + e.getMessage());
+                System.out.printf("[%s]: Exception: %s\n", this.nodeName, e.getMessage());
             }
         }
+    }
+
+    /**
+     * This method is responsible for setting the isSynced flag to true, this specifies that the database node is synced
+     * with the leader database node.
+     */
+    @Override
+    public void setDatabaseSynced() {
+        System.out.printf("[%s]: Setting the database node as synced with latest data\n", this.nodeName);
+        this.isSynced = true;
+    }
+
+    /**
+     * This method is responsible for setting the isSynced flag to false, this specifies that the database node is not
+     * synced with latest data.
+     */
+    private void setDatabaseIsNotSynced() {
+        System.out.printf("[%s]: Setting the database node as not synced with latest data\n", this.nodeName);
+        this.isSynced = false;
+    }
+
+    /**
+     * The method is responsible to sync the node with the latest data after it becomes active.
+     */
+    private void syncNodeWithTheLatestData() {
+        System.out.printf("[%s]: Syncing this database node with the latest data\n", this.nodeName);
+        rootNodeImpl.updateANodeWhichHasJustComeActive(this);
     }
 
     /**
@@ -180,5 +231,14 @@ public class NodeImpl implements Node {
     @Override
     public String getNodeName() {
         return this.nodeName;
+    }
+
+    /**
+     * This method is responsible for returning the data, stored in this database node.
+     * @return : Returns the data
+     */
+    @Override
+    public ConcurrentMap<String, String> getData() {
+        return this.data;
     }
 }

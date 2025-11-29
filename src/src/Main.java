@@ -1,10 +1,7 @@
 import node.MasterNode;
-import node.RootNode;
 import node.impl.RootNodeImpl;
 import server.impl.ProxyServerImpl;
 import util.RandomInteger;
-
-import java.util.Random;
 
 public class Main {
     public static void main(String[] args) {
@@ -30,6 +27,12 @@ public class Main {
             getData("Key-" + RandomInteger.getRandomInteger(1, 2000), rootNodeImpl);
             getData("Key-" + RandomInteger.getRandomInteger(1, 2000), rootNodeImpl);
             getData("Key-" + RandomInteger.getRandomInteger(1, 2000), rootNodeImpl);
+
+            Thread.sleep(3000);
+            deleteData("Key-" + RandomInteger.getRandomInteger(1, 2000), rootNodeImpl);
+            deleteData("Key-" + RandomInteger.getRandomInteger(1, 2000), rootNodeImpl);
+            deleteData("Key-" + RandomInteger.getRandomInteger(1, 2000), rootNodeImpl);
+            deleteData("Key-" + RandomInteger.getRandomInteger(1, 2000), rootNodeImpl);
         }
     }
 
@@ -44,7 +47,7 @@ public class Main {
         try {
             System.out.println(rootNodeImpl.getData(key));
         } catch (Exception e) {
-            System.out.println("Exception: " + e.getMessage());
+            System.out.println("Exception getData: " + e.getMessage());
         }
     }
 
@@ -52,7 +55,15 @@ public class Main {
         try {
             rootNodeImpl.writeData(key, value);
         } catch (Exception e) {
-            System.out.println("Exception: " + e.getMessage());
+            System.out.println("Exception writeData: " + e.getMessage());
+        }
+    }
+
+    private static void deleteData(String key, MasterNode rootNodeImpl) {
+        try {
+            rootNodeImpl.deleteData(key);
+        } catch (Exception e) {
+            System.out.println("Exception deleteData: " + e.getMessage());
         }
     }
      */
