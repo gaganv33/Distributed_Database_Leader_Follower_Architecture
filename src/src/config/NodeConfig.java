@@ -7,4 +7,5 @@ public interface NodeConfig {
     long waitingTimeIfNodeInactive = 3000;
     long cleaningTheLogFileTime = 10000;
     long updateReplicaNodesTime = 2000;
+    long waitingTimeWhileSyncing = 3000;
 }

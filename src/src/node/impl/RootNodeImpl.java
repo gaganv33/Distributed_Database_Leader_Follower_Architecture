@@ -6,6 +6,7 @@ import exception.DataNotFoundException;
 import exception.InActiveNodeException;
 import exception.RootNodeDownException;
 import log.WriteAheadLog;
+import node.EscalatingNode;
 import node.MasterNode;
 import node.Node;
 import node.RootNode;
@@ -19,24 +20,17 @@ import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
-public class RootNodeImpl implements Runnable, RootNode, MasterNode {
+public class RootNodeImpl implements RootNode {
     private final String rootName;
-    private final ConcurrentHashMap<Node, LocalDateTime> heartBeat;
-    private final ConcurrentHashMap<Node, Boolean> activeNodes;
-    private Node leaderNodeImpl;
-    private final List<Node> replicaNodeImpls;
+    private final ConcurrentHashMap<EscalatingNode, LocalDateTime> heartBeat;
+    private final ConcurrentHashMap<EscalatingNode, Boolean> activeNodes;
+    private EscalatingNode leaderNodeImpl;
+    private final List<EscalatingNode> replicaNodeImpls;
     private final AtomicInteger index;
     private final WriteAheadLog writeAheadLog;
     private final Object leaderLock = new Object();
     private final Object readReplicaImplsLock = new Object();
     private boolean isActive;
-
-    private WriteAheadLog startWriteAheadLogThread(int numberOfNodes) {
-        WriteAheadLog writeAheadLog = new WriteAheadLog(numberOfNodes);
-        Thread writeAheadLogthread = new Thread(writeAheadLog);
-        writeAheadLogthread.start();
-        return writeAheadLog;
-    }
 
     public RootNodeImpl(String rootName, int numberOfNodes) {
         this.rootName = rootName;
@@ -45,9 +39,7 @@ public class RootNodeImpl implements Runnable, RootNode, MasterNode {
         this.activeNodes = new ConcurrentHashMap<>();
         this.index = new AtomicInteger(0);
         this.isActive = true;
-        this.writeAheadLog = new WriteAheadLog(numberOfNodes);
-        Thread writeAheadLogThread = new Thread(this.writeAheadLog);
-        writeAheadLogThread.start();
+        this.writeAheadLog = new WriteAheadLog();
 
         this.leaderNodeImpl = new NodeImpl("NodeImpl - 1", NodeType.LEADER, this);
         Thread leaderNodeImplThread = new Thread(this.leaderNodeImpl);
@@ -56,7 +48,7 @@ public class RootNodeImpl implements Runnable, RootNode, MasterNode {
         this.activeNodes.put(this.leaderNodeImpl, true);
         this.replicaNodeImpls.add(this.leaderNodeImpl);
         for (int i = 0; i < numberOfNodes - 1; i++) {
-            Node nodeImpl = new NodeImpl("NodeImpl - " + Integer.toString(i + 2), NodeType.REPLICA, this);
+            EscalatingNode nodeImpl = new NodeImpl("NodeImpl - " + Integer.toString(i + 2), NodeType.REPLICA, this);
             Thread nodeImplThread = new Thread(nodeImpl);
             nodeImplThread.start();
             this.heartBeat.put(nodeImpl,  LocalDateTime.now());
@@ -83,7 +75,7 @@ public class RootNodeImpl implements Runnable, RootNode, MasterNode {
                     try {
                         Thread.sleep(NodeConfig.waitingTimeIfNodeInactive);
                     } catch (Exception e) {
-                        System.out.println("Exception: " + e.getMessage());
+                        System.out.printf("[%s]: Exception checkIfAllNodesAreActive: %s\n", this.rootName, e.getMessage());
                     }
                     System.out.printf("[%s]: checkIfAllNodesAreActive, Waiting for at least one database node to be active\n", this.rootName);
                 }
@@ -91,7 +83,7 @@ public class RootNodeImpl implements Runnable, RootNode, MasterNode {
                     Thread.sleep(NodeConfig.checkingNodesAreActiveWaitingTime);
                     System.out.printf("[%s]: Checking if all the nodes are active\n", rootName);
                     for (var x : heartBeat.entrySet()) {
-                        Node nodeImpl = x.getKey();
+                        EscalatingNode nodeImpl = x.getKey();
                         LocalDateTime time = x.getValue();
                         if(!activeNodes.get(nodeImpl)) {
                             continue;
@@ -117,7 +109,7 @@ public class RootNodeImpl implements Runnable, RootNode, MasterNode {
                         }
                     }
                 } catch (Exception e) {
-                    System.out.println("Exception: " + e.getMessage());
+                    System.out.printf("[%s]: Exception checkIfAllNodesAreActive: %s\n", this.rootName, e.getMessage());
                 }
             }
         });
@@ -131,7 +123,7 @@ public class RootNodeImpl implements Runnable, RootNode, MasterNode {
                     try {
                         Thread.sleep(NodeConfig.waitingTimeIfNodeInactive);
                     } catch (InterruptedException e) {
-                        throw new RuntimeException(e);
+                        System.out.printf("[%s]: Exception updateDataInReplica: %s\n", this.rootName, e.getMessage());
                     }
                     System.out.printf("[%s]: updateHeartBeatThread, Waiting for at least one database node to be active\n", this.rootName);
                 }
@@ -140,7 +132,7 @@ public class RootNodeImpl implements Runnable, RootNode, MasterNode {
                     System.out.printf("[%s]: Notifying the database replica node with the latest data\n", this.rootName);
                     notifyReplica();
                 } catch (Exception e) {
-                    System.out.println("Exception: " + e.getMessage());
+                    System.out.printf("[%s]: Exception updateDataInReplica: %s\n", this.rootName, e.getMessage());
                 }
             }
         });
@@ -155,7 +147,7 @@ public class RootNodeImpl implements Runnable, RootNode, MasterNode {
      */
     private void leaderElection() throws RootNodeDownException {
         synchronized (readReplicaImplsLock) {
-            if (!isReadReplicaNodeImplsEmpty()) {
+            if (!isActive || !isReadReplicaNodeImplsEmpty()) {
                 throw new RootNodeDownException("The root node: " + this.rootName + " is down");
             }
             System.out.printf("[%s]: Starting leader election process\n", this.rootName);
@@ -166,9 +158,11 @@ public class RootNodeImpl implements Runnable, RootNode, MasterNode {
     }
 
     /**
-     * This method is used to store the key, value pair to the database.
+     * This method is used to store the key, value pair to the database. All write requests are made only to the leader
+     * node. And replicated across all the other nodes in asynchronous manner.
      * @param key : Using this key we can access the value
      * @param value : the value associated to the key
+     * @throws RootNodeDownException : If all the database nodes are down, then we throw this exception.
      */
     @Override
     public void writeData(String key, String value) throws RootNodeDownException {
@@ -184,10 +178,32 @@ public class RootNodeImpl implements Runnable, RootNode, MasterNode {
     }
 
     /**
+     * This method is used to delete the key and its associated value from the database. All delete requests are made only
+     * to the leader node. And replicated across all the other nodes in asynchronous manner.
+     * @param key : Using this key we can delete its associated value from the database.
+     * @throws RootNodeDownException : If all the database nodes are down, then we throw this exception.
+     */
+    @Override
+    public void deleteData(String key) throws RootNodeDownException {
+        synchronized (leaderLock) {
+            synchronized (readReplicaImplsLock) {
+                if (!isActive || !isReadReplicaNodeImplsEmpty()) {
+                    throw new RootNodeDownException("The root node: " + this.rootName + " is down");
+                }
+            }
+            System.out.printf("[%s]: Delete data request\n", this.rootName);
+            this.leaderNodeImpl.deleteData(key);
+        }
+    }
+
+    /**
      * This method is responsible to return the value for the given key.
+     * The read requests are made to the database nodes, in a round-robin manner. To prevent overloading of a database node.
      * @param key : We use this key to get the corresponding value
      * @return String : Return the corresponding value for the given key.
      * @throws DataNotFoundException : When data is not found then we throw this exception.
+     * @throws InActiveNodeException : This exception is thrown when the database node is inactive.
+     * @throws RootNodeDownException : If all the database nodes are down, then we throw this exception.
      */
     @Override
     public String getData(String key) throws DataNotFoundException, InActiveNodeException, RootNodeDownException {
@@ -206,7 +222,7 @@ public class RootNodeImpl implements Runnable, RootNode, MasterNode {
      * @param nodeImpl : Updating the heart beat for the given nodeImpl
      */
     @Override
-    public void updateHeartBeat(Node nodeImpl) {
+    public void updateHeartBeat(EscalatingNode nodeImpl) {
         synchronized (readReplicaImplsLock) {
             System.out.printf("[%s]: Update heart beat from the database node: %s\n", this.rootName, nodeImpl.getNodeName());
             heartBeat.put(nodeImpl, LocalDateTime.now());
@@ -233,13 +249,24 @@ public class RootNodeImpl implements Runnable, RootNode, MasterNode {
     }
 
     /**
+     * This method is used to remove the key from the log and the merkle tree asynchronously.
+     * @param key : Removing the corresponding key from the log and merkle tree asynchronously.
+     */
+    @Override
+    public void updateLog(String key) {
+        this.writeAheadLog.removeData(key);
+    }
+
+    /**
      * This method is responsible to replicate the latest data present in the WriteAheadLog to the all the database nodes.
      */
     @Override
     public void notifyReplica() {
+        List<Node> snapshot;
         synchronized (readReplicaImplsLock) {
-            this.writeAheadLog.notifyReplicas(replicaNodeImpls);
+            snapshot = new ArrayList<>(replicaNodeImpls);
         }
+        this.writeAheadLog.notifyReplicas(snapshot);
     }
 
     /**
@@ -249,13 +276,8 @@ public class RootNodeImpl implements Runnable, RootNode, MasterNode {
      */
     @Override
     public void updateANodeWhichHasJustComeActive(Node nodeImpl) {
-        synchronized (readReplicaImplsLock) {
-            if (!isActive) {
-                System.out.printf("[%s]: Cannot update the database node with the latest data, since it is down\n", this.rootName);
-                return;
-            }
-            writeAheadLog.updateTheReplicaNode(nodeImpl);
-        }
+        // updating the node which has just come active with the latest data, using the merkle tree synchronization
+        this.writeAheadLog.updateANodeWhichHasJustComeActive(nodeImpl);
     }
 
     /**
