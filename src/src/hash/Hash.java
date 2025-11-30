@@ -7,6 +7,14 @@ public class Hash {
     public static String getHashForKeyAndValue(String key, String value) {
         try {
             String input = String.format("%s : %s", key, value);
+            return getHashForString(input);
+        } catch (Exception e) {
+            throw new RuntimeException("Error hashing string", e);
+        }
+    }
+
+    public static String getHashForString(String input) {
+        try {
             byte[] hashBytes = getByteFormat(input);
             return getHash(hashBytes);
         } catch (Exception e) {

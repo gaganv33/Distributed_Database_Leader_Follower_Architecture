@@ -1,26 +1,44 @@
 package log;
 
-import config.NodeConfig;
 import config.OperationType;
 import data.Operation;
 import data.UpsertOperation;
+import hash.Hash;
 import merkleTree.construction.TreeConstruction;
 import merkleTree.node.TreeNode;
 import merkleTree.synchronization.TreeSynchronization;
 import node.Node;
+import util.Hashing;
 
+import java.time.LocalDateTime;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.*;
 
 public class WriteAheadLog {
     private final ConcurrentHashMap<String, Operation> data;
     private final ConcurrentMap<String, String> dataForRecovery;
+    private final BlockingQueue<Runnable> walQueue;
+    private final Object lock = new Object();
 
     public WriteAheadLog() {
         this.data = new ConcurrentHashMap<>();
         this.dataForRecovery = new ConcurrentSkipListMap<>();
+        this.walQueue = new LinkedBlockingDeque<>();
+
+        // Starting a WriteAheadLog Thread, so that it can execute the operations such as writing records, deleting records,
+        // and clearing the records after the replication is done in the replica nodes.
+        Thread WriteAheadLogWorker = new Thread(() -> {
+            System.out.println("Starting a worker thread in WriteAheadLog");
+            while (true) {
+                try {
+                    Runnable task = walQueue.take();
+                    task.run();
+                } catch (Exception e) {
+                    System.out.println("[WriteAheadLogWorker]: Exception " + e.getMessage());
+                }
+            }
+        });
+        WriteAheadLogWorker.start();
     }
 
     /**
@@ -30,12 +48,13 @@ public class WriteAheadLog {
      * @param value : The corresponding value to the key.
      */
     public void addData(String key, String value) {
-        Thread addDataThread = new Thread(() -> {
-            data.put(key, new UpsertOperation(OperationType.UPSERT, value));
-            dataForRecovery.put(key, value);
+        walQueue.add(() -> {
+            synchronized (lock) {
+                String hash = Hash.getHashForString(String.format("%s - %s", OperationType.UPSERT.toString(), value));
+                data.put(key, new UpsertOperation(OperationType.UPSERT, hash, value));
+                dataForRecovery.put(key, value);
+            }
         });
-        addDataThread.setDaemon(true);
-        addDataThread.start();
     }
 
     /**
@@ -43,12 +62,13 @@ public class WriteAheadLog {
      * @param key : The key which has to be removed from the temporary log and merkle tree.
      */
     public void removeData(String key) {
-        Thread deleteDataThread = new Thread(() -> {
-            data.put(key, new Operation(OperationType.DELETE));
-            dataForRecovery.remove(key);
+        walQueue.add(() -> {
+            synchronized (lock) {
+                String hash = Hash.getHashForString(String.format("%s", OperationType.DELETE.toString()));
+                data.put(key, new Operation(OperationType.DELETE, hash));
+                dataForRecovery.remove(key);
+            }
         });
-        deleteDataThread.setDaemon(true);
-        deleteDataThread.start();
     }
 
     /**
@@ -59,7 +79,14 @@ public class WriteAheadLog {
      */
     public void notifyReplicas(List<Node> replicaNodeImpl) {
         Thread notifyReplicaThread = new Thread(() -> {
-            for(var entry : data.entrySet()) {
+            // Maintaining a snapshot to prevent clearing the complete write ahead log. After the replication to all the
+            // database nodes.
+            ConcurrentHashMap<String, Operation> dataSnapshot;
+            synchronized (lock) {
+                dataSnapshot = new ConcurrentHashMap<>(data);
+            }
+            boolean isSuccess = true;
+            for(var entry : dataSnapshot.entrySet()) {
                 String key = entry.getKey();
                 Operation operation = entry.getValue();
                 OperationType operationType = operation.operationType;
@@ -71,6 +98,7 @@ public class WriteAheadLog {
                         try {
                             replicaNode.writeData(key, value);
                         } catch (Exception e) {
+                            isSuccess = false;
                             System.out.println("Exception: " + e.getMessage());
                         }
                     }
@@ -80,12 +108,17 @@ public class WriteAheadLog {
                         try {
                             replicaNode.deleteData(key);
                         } catch (Exception e) {
+                            isSuccess = false;
                             System.out.println("Exception: " + e.getMessage());
                         }
                     }
                 }
             }
-            clearData();
+            if (!isSuccess) {
+                System.out.println("Replication to all the database node did not succeed. Thus not clearing the log");
+                return;
+            }
+            clearData(dataSnapshot);
         });
         notifyReplicaThread.setDaemon(true);
         notifyReplicaThread.start();
@@ -116,8 +149,24 @@ public class WriteAheadLog {
      * This method is used to clear the hash map, which contains the latest data that has to be replicated to all the
      * database nodes.
      * This method is called once the data is replicated with all the database nodes.
+     * Remove only the records that have been replicated to all the database nodes. So if there is a new record in the
+     * log, then are not removing them. Maintaining a snapshot of the data before replicating it to all the nodes.
+     * @param dataSnapshot : The records that have to be removed from the log file.
      */
-    private void clearData() {
-        this.data.clear();
+    private void clearData(ConcurrentHashMap<String, Operation> dataSnapshot) {
+        walQueue.add(() -> {
+            synchronized (lock) {
+                for (var entry : dataSnapshot.entrySet()) {
+                    String key = entry.getKey();
+                    String snapshotHash = entry.getValue().hash;
+                    String dataHash = data.get(key).hash;
+
+                    // We can check if the data value is same as the snapshot  value by comparing the hash value.
+                    if (dataHash.equals(snapshotHash)) {
+                        data.remove(key);
+                    }
+                }
+            }
+        });
     }
 }

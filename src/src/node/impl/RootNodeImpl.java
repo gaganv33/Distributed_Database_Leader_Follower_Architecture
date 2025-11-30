@@ -87,8 +87,10 @@ public class RootNodeImpl implements RootNode {
                     for (var x : heartBeat.entrySet()) {
                         EscalatingNode nodeImpl = x.getKey();
                         LocalDateTime time = x.getValue();
-                        if(!activeNodes.get(nodeImpl)) {
-                            continue;
+                        synchronized (readReplicaImplsLock) {
+                            if (!activeNodes.get(nodeImpl)) {
+                                continue;
+                            }
                         }
                         long secondsDifference = time.until(LocalDateTime.now(), ChronoUnit.SECONDS);
                         System.out.printf("[%s]: %s -> %d %d\n", this.rootName, nodeImpl.getNodeName(), secondsDifference, NodeConfig.heartBeatLimitTime);
@@ -162,7 +164,7 @@ public class RootNodeImpl implements RootNode {
             }
         });
         updateHeartBeatToProxyServer.setDaemon(true);
-        updateHeartBeatToProxyServer.start();
+//        updateHeartBeatToProxyServer.start();
     }
 
     /**
