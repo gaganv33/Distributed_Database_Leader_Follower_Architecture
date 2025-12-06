@@ -1,8 +1,16 @@
 package merkleTree.synchronization;
 
+import config.Constants;
+import data.Range;
+import exception.InActiveNodeException;
+import exception.RootNodeDownException;
 import merkleTree.node.LeafTreeNode;
 import merkleTree.node.TreeNode;
+import node.MasterNode;
 import node.Node;
+import node.RootNode;
+import util.Hash;
+import util.Helper;
 
 public class TreeSynchronization {
     /**
@@ -27,6 +35,37 @@ public class TreeSynchronization {
         syncData(leaderTreeNode, replicaTreeNode, replicaNode);
     }
 
+    public static void treeSynchronization(TreeNode nextRootNodeTree, TreeNode currentRootNodeTree,
+                                           MasterNode currentRootNode, Range range) {
+        if (nextRootNodeTree == null) {
+            System.out.println("The next root node is empty, nothing to sync with the current root node.");
+            return;
+        }
+        if (currentRootNodeTree == null) {
+            System.out.println("The current root node is empty, so syncing the leader node with the current node, only in the range");
+            while (true) {
+                int copyToCurrentRootNodeResult = copyNextRootNodeToCurrentRootNode(nextRootNodeTree, currentRootNode, range);
+                if (copyToCurrentRootNodeResult == Constants.SUCCESSFUL_WRITE) {
+                    System.out.println("Successful write to the current root node");
+                    break;
+                } else if (copyToCurrentRootNodeResult == Constants.UNSUCCESSFUL_ROOT_NODE_DOWN) {
+                    System.out.println("The current root node is down");
+                    break;
+                } else {
+                    System.out.println("The current root node, the leader node is inactive, waiting for another node" +
+                            " to be elected as a leader. Retrying after 3 seconds");
+                    try {
+                        Thread.sleep(3000);
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
+                }
+            }
+            return;
+        }
+        System.out.println("Syncing data of next node with the current node");
+    }
+
     /**
      * The method is responsible used to copy the complete data from the leader node to replica database node. Since,
      * the replica database node is empty (no records).
@@ -46,6 +85,29 @@ public class TreeSynchronization {
         if (leaderTreeNode.left != null) {
             copyLeaderDataToReplica(leaderTreeNode.left, replicaNode);
         }
+    }
+
+    public static int copyNextRootNodeToCurrentRootNode(TreeNode nextRootNodeTree, MasterNode currentRootNode,
+                                                         Range range) {
+        if (nextRootNodeTree.isLeaf) {
+            LeafTreeNode leafTreeNode = (LeafTreeNode) nextRootNodeTree;
+            String input = Helper.combineKeyAndValue(leafTreeNode.key, leafTreeNode.value);
+            int positionInRing = Hash.getPositionInRing(input);
+            if (positionInRing >= range.start && positionInRing <= range.end) {
+                return writeToRootNode(leafTreeNode.key, leafTreeNode.value, currentRootNode);
+            }
+            return Constants.SUCCESSFUL_WRITE;
+        }
+
+        if (nextRootNodeTree.right != null) {
+            int writeResult = copyNextRootNodeToCurrentRootNode(nextRootNodeTree.right, currentRootNode, range);
+            if (writeResult != Constants.SUCCESSFUL_WRITE) return writeResult;
+        }
+        if (nextRootNodeTree.left != null) {
+            int writeResult = copyNextRootNodeToCurrentRootNode(nextRootNodeTree.left, currentRootNode, range);
+            if (writeResult != Constants.SUCCESSFUL_WRITE) return writeResult;
+        }
+        return Constants.SUCCESSFUL_WRITE;
     }
 
     /**
@@ -107,6 +169,21 @@ public class TreeSynchronization {
             replicaNode.writeData(key, value);
         } catch (Exception e) {
             System.out.println("Exception: " + e.getMessage());
+        }
+    }
+
+    private static int writeToRootNode(String key, String value, MasterNode currentRootNode) {
+        try {
+            currentRootNode.writeData(key, value);
+            return Constants.SUCCESSFUL_WRITE;
+        } catch (RootNodeDownException e) {
+            System.out.println("Writing to root node failed, while copying data from next root node to current root node." +
+                    "Due to RootNodeDownException.");
+            return Constants.UNSUCCESSFUL_ROOT_NODE_DOWN;
+        } catch (InActiveNodeException e) {
+            System.out.println("Writing to root node failed, while copying data from next root node to current root node." +
+                    "Due to InActiveNodeException.");
+            return Constants.UNSUCCESSFUL_IN_ACTIVE_NODE;
         }
     }
 }

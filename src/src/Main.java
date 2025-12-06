@@ -4,14 +4,15 @@ import server.impl.ProxyServerImpl;
 import util.RandomInteger;
 
 public class Main {
-//    public static void main(String[] args) {
-//        ProxyServerImpl proxyServer = new ProxyServerImpl(3);
-//        proxyServer.addRootNode("Root Node - a", 4);
-//        proxyServer.addRootNode("Root Node - 3", 4);
-//        proxyServer.addRootNode("Root Node - 4", 4);
-//        proxyServer.addRootNode("Root Node - 5", 4);
-//    }
+    public static void main(String[] args) {
+        ProxyServerImpl proxyServer = new ProxyServerImpl(3);
+        proxyServer.addRootNode("Root Node - a", 4);
+        proxyServer.addRootNode("Root Node - 3", 4);
+        proxyServer.addRootNode("Root Node - 4", 4);
+        proxyServer.addRootNode("Root Node - 5", 4);
+    }
 
+    /*
     // Example for a single shard database
     public static void main(String[] args) throws InterruptedException {
         MasterNode rootNodeImpl = startRootNode();
@@ -66,4 +67,5 @@ public class Main {
             System.out.println("Exception deleteData: " + e.getMessage());
         }
     }
+     */
 }

@@ -3,14 +3,12 @@ package log;
 import config.OperationType;
 import data.Operation;
 import data.UpsertOperation;
-import hash.Hash;
+import util.Hash;
 import merkleTree.construction.TreeConstruction;
 import merkleTree.node.TreeNode;
 import merkleTree.synchronization.TreeSynchronization;
 import node.Node;
-import util.Hashing;
 
-import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -38,7 +36,7 @@ public class WriteAheadLog {
                 }
             }
         });
-        WriteAheadLogWorker.start();
+//        WriteAheadLogWorker.start();
     }
 
     /**

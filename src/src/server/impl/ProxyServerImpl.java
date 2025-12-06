@@ -1,19 +1,22 @@
 package server.impl;
 
 import config.NodeConfig;
+import data.Data;
 import data.Pair;
 import data.Range;
+import merkleTree.synchronization.SynchronizationService;
 import node.MasterNode;
+import node.RootNode;
 import node.impl.RootNodeImpl;
 import server.ProxyServer;
-import util.Hashing;
+import util.Hash;
 import util.RandomInteger;
 
-import javax.imageio.spi.ImageInputStreamSpi;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 public class ProxyServerImpl implements ProxyServer, Runnable {
     private final ConcurrentHashMap<MasterNode, LocalDateTime> heartBeat;
@@ -38,6 +41,8 @@ public class ProxyServerImpl implements ProxyServer, Runnable {
 
     @Override
     public void updateHeartBeat(MasterNode rootNode) {
+        Range range;
+        MasterNode nextRootNode;
         synchronized (lock) {
             System.out.printf("[ProxyServerImpl]: Update heart beat request from root node: %s\n", rootNode.getRootNodeName());
             heartBeat.put(rootNode, LocalDateTime.now());
@@ -48,8 +53,21 @@ public class ProxyServerImpl implements ProxyServer, Runnable {
                 System.out.println("[ProxyServerImpl]: A root node is active. Thus proxy server is back up");
                 isActive = true;
             }
-            addRootNodeConsistentHashing(rootNode);
+            // Adding the node once it is active.
+            Data data = addRootNodeConsistentHashing(rootNode);
+            int indexRootNodesData = data.indexRootNodesData;
+            if (indexRootNodesData == 0) return;
+            range = data.range;
+            int nextIndexRootNodesData = (indexRootNodesData + 1) % rootNodesData.size();
+            nextRootNode = rootNodesData.get(nextIndexRootNodesData).node;
         }
+        // After adding the node, then we update the node with the latest data.
+        // Updating the node with the latest data from the next node (in the cycle).
+        ConcurrentMap<String, String> nextRootNodeData = ((RootNode) nextRootNode).getDataFromLeader();
+        ConcurrentMap<String, String> currentRootNodeData = ((RootNode) rootNode).getDataFromLeader();
+        SynchronizationService.synchronizeRootNode(nextRootNodeData, currentRootNodeData, rootNode, range);
+
+        SynchronizationService.synchronizeRootNode(nextRootNodeData, currentRootNodeData, rootNode, range);
     }
 
     @Override
@@ -82,9 +100,8 @@ public class ProxyServerImpl implements ProxyServer, Runnable {
                     for (var entry : heartBeat.entrySet()) {
                         MasterNode node = entry.getKey();
                         LocalDateTime time = entry.getValue();
-
                         synchronized (lock) {
-                            if (!isActive) {
+                            if (!activeNodes.get(node)) {
                                 continue;
                             }
                         }
@@ -110,7 +127,7 @@ public class ProxyServerImpl implements ProxyServer, Runnable {
     private void consistentHashing() {
         synchronized (lock) {
             for (var x : heartBeat.keySet()) {
-                int positionInRing = Hashing.getPositionInRing(x.getRootNodeName());
+                int positionInRing = Hash.getPositionInRing(x.getRootNodeName());
                 Pair pair = new Pair(positionInRing, x);
                 rootNodesData.add(pair);
                 rootNodesLookUp.put(x, pair);
@@ -122,7 +139,7 @@ public class ProxyServerImpl implements ProxyServer, Runnable {
         }
     }
 
-    private void addRootNodeConsistentHashing(MasterNode rootNode) {
+    private Data addRootNodeConsistentHashing(MasterNode rootNode) {
         synchronized (lock) {
             int positionInRing;
             Pair pair;
@@ -131,12 +148,15 @@ public class ProxyServerImpl implements ProxyServer, Runnable {
                 pair = rootNodesLookUp.get(rootNode);
             } else {
                 String rootNodeName = rootNode.getRootNodeName();
-                positionInRing = Hashing.getPositionInRing(rootNodeName);
+                positionInRing = Hash.getPositionInRing(rootNodeName);
                 pair = new Pair(positionInRing, rootNode);
                 rootNodesLookUp.put(rootNode, pair);
             }
+            int indexRootNodesData;
+            Range rangeRootNodesData = null;
             if (rootNodesData.isEmpty()) {
                 rootNodesData.add(pair);
+                indexRootNodesData = 0;
             } else {
                 int index = getIndex(positionInRing);
                 System.out.println(rootNode.getRootNodeName() + " " + positionInRing + " " + index);
@@ -146,7 +166,9 @@ public class ProxyServerImpl implements ProxyServer, Runnable {
                 } else {
                     rootNodesData.add(index, pair);
                 }
+                indexRootNodesData = index;
                 Range range = getRange(index);
+                rangeRootNodesData = range;
                 System.out.println("Range: " + range.start + " " + range.end);
             }
 
@@ -154,6 +176,7 @@ public class ProxyServerImpl implements ProxyServer, Runnable {
             for (var x : rootNodesData) {
                 System.out.println(x.node.getRootNodeName() + " " + x.positionInRing);
             }
+            return new Data(indexRootNodesData, rangeRootNodesData);
         }
     }
 

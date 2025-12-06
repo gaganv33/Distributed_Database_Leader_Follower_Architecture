@@ -1,13 +1,11 @@
 package merkleTree.construction;
 
-import hash.Hash;
+import util.Hash;
 import merkleTree.node.LeafTreeNode;
 import merkleTree.node.TreeNode;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 public class TreeConstruction {
@@ -17,6 +15,9 @@ public class TreeConstruction {
      * @return : Returns the merkle tree for the given dataset.
      */
     public static TreeNode constructTreeNode(ConcurrentMap<String, String> data) {
+        if (data.isEmpty()) {
+            return null;
+        }
         List<TreeNode> nodes = getLeafNodes(data);
 
         while (nodes.size() != 1) {

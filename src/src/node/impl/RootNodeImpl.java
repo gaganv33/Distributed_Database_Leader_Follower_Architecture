@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class RootNodeImpl implements RootNode {
@@ -45,14 +46,14 @@ public class RootNodeImpl implements RootNode {
 
         this.leaderNodeImpl = new NodeImpl("NodeImpl - 1", NodeType.LEADER, this);
         Thread leaderNodeImplThread = new Thread(this.leaderNodeImpl);
-        leaderNodeImplThread.start();
+//        leaderNodeImplThread.start();
         this.heartBeat.put(this.leaderNodeImpl, LocalDateTime.now());
         this.activeNodes.put(this.leaderNodeImpl, true);
         this.replicaNodeImpls.add(this.leaderNodeImpl);
         for (int i = 0; i < numberOfNodes - 1; i++) {
             EscalatingNode nodeImpl = new NodeImpl("NodeImpl - " + Integer.toString(i + 2), NodeType.REPLICA, this);
             Thread nodeImplThread = new Thread(nodeImpl);
-            nodeImplThread.start();
+//            nodeImplThread.start();
             this.heartBeat.put(nodeImpl,  LocalDateTime.now());
             this.activeNodes.put(nodeImpl, true);
             this.replicaNodeImpls.add(nodeImpl);
@@ -305,6 +306,13 @@ public class RootNodeImpl implements RootNode {
     public void updateANodeWhichHasJustComeActive(Node nodeImpl) {
         // updating the node which has just come active with the latest data, using the merkle tree synchronization
         this.writeAheadLog.updateANodeWhichHasJustComeActive(nodeImpl);
+    }
+
+    @Override
+    public ConcurrentMap<String, String> getDataFromLeader() {
+        synchronized (leaderLock) {
+            return this.leaderNodeImpl.getData();
+        }
     }
 
     /**

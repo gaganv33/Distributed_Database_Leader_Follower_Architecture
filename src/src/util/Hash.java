@@ -1,12 +1,15 @@
-package hash;
+package util;
 
+import config.NodeConfig;
+
+import java.math.BigInteger;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
 public class Hash {
     public static String getHashForKeyAndValue(String key, String value) {
         try {
-            String input = String.format("%s : %s", key, value);
+            String input = Helper.combineKeyAndValue(key, value);
             return getHashForString(input);
         } catch (Exception e) {
             throw new RuntimeException("Error hashing string", e);
@@ -33,9 +36,13 @@ public class Hash {
         }
     }
 
-    private static byte[] getByteFormat(String input) throws NoSuchAlgorithmException {
-        MessageDigest md = MessageDigest.getInstance("SHA-256");
-        return md.digest(input.getBytes());
+    private static byte[] getByteFormat(String input) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            return md.digest(input.getBytes());
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private static String getHash(byte[] hashBytes) {
@@ -60,5 +67,11 @@ public class Hash {
             hashBytes[index++] = leftHashByte;
         }
         return hashBytes;
+    }
+
+    public static int getPositionInRing(String rootNodeName) {
+        byte[] digest = getByteFormat(rootNodeName);
+        BigInteger bigInt = new BigInteger(1, digest);
+        return bigInt.mod(BigInteger.valueOf(NodeConfig.lastPositionInRing)).intValue();
     }
 }
