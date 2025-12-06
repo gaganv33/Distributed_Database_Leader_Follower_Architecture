@@ -6,13 +6,14 @@ import data.operationDetails.OperationDetails;
 import data.operationDetails.UpdateOperationDetails;
 
 import java.math.BigInteger;
-import java.util.TreeMap;
+import java.util.HashMap;
 
-public class WriteAheadLog {
-    private final TreeMap<BigInteger, OperationDetails> log;
+public class TemporaryLog {
+    private final HashMap<BigInteger, OperationDetails> log;
 
-    public WriteAheadLog() {
-        log = new TreeMap<>();
+
+    public TemporaryLog() {
+        log = new HashMap<>();
     }
 
     public void addUpdateLog(BigInteger logicalTimestamp, String key, String value) {
@@ -23,10 +24,11 @@ public class WriteAheadLog {
         log.put(logicalTimestamp, new DeleteOperationDetails(OperationType.DELETE, key));
     }
 
-    public BigInteger maximumLogicalTimeStamp() {
-        if (log.isEmpty()) {
-            return new BigInteger(String.valueOf(-1));
-        }
-        return log.lastKey();
+    public HashMap<BigInteger, OperationDetails> getTemporaryLog() {
+        return log;
+    }
+
+    public void clearTemporaryLog() {
+        log.clear();
     }
 }
