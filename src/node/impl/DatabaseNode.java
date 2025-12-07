@@ -1,9 +1,7 @@
 package node.impl;
 
 import data.DatabaseNodeType;
-import data.OperationType;
 import data.Value;
-import data.operationDetails.UpdateOperationDetails;
 import exception.DataNotFoundException;
 import exception.DatabaseNodeInActiveException;
 import exception.NotLeaderException;
