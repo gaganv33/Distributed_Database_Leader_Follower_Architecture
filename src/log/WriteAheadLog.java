@@ -6,6 +6,7 @@ import data.operationDetails.OperationDetails;
 import data.operationDetails.UpdateOperationDetails;
 
 import java.math.BigInteger;
+import java.util.HashMap;
 import java.util.TreeMap;
 
 public class WriteAheadLog {
@@ -28,5 +29,13 @@ public class WriteAheadLog {
             return new BigInteger(String.valueOf(-1));
         }
         return log.lastKey();
+    }
+
+    public BigInteger getMaximumLogicalTimestamp() {
+        return log.lastKey();
+    }
+
+    public HashMap<BigInteger, OperationDetails> getLogsAfterTheGivenTimestamp(BigInteger maximumLogicalTimestamp) {
+        return new HashMap<>(log.tailMap(maximumLogicalTimestamp));
     }
 }
