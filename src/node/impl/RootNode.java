@@ -261,12 +261,20 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
                     removeDatabaseNode(newLeaderDatabaseNode);
                     continue;
                 }
+                System.out.printf("[%s]: Notifying all the database node, to store the logical timestamp\n", this.rootNodeName);
+                notifyDatabaseNodesToStoreTheLatestLogicalTimestamp();
                 System.out.printf("[%s]: Found a leader, database node name: %s\n", this.rootNodeName,
                         newLeaderDatabaseNode.getDatabaseNodeName());
                 newLeaderDatabaseNode.elevateToLeaderDatabaseNode();
                 leaderDatabaseNode = newLeaderDatabaseNode;
                 return;
             }
+        }
+    }
+
+    private void notifyDatabaseNodesToStoreTheLatestLogicalTimestamp() {
+        for (var databaseNodes : databaseNodesStatus.keySet()) {
+            databaseNodes.leaderElectionStartedStoreLogicalTimestamp();
         }
     }
 

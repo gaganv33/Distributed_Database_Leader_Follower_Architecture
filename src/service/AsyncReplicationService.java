@@ -1,20 +1,29 @@
 package service;
 
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.LinkedList;
+import java.util.Queue;
 
 public class AsyncReplicationService implements Runnable {
-    private final LinkedBlockingQueue<Runnable> linkedBlockingQueue;
+    private final Queue<Runnable> queue;
+    private final Object lock;
 
     public AsyncReplicationService() {
-        this.linkedBlockingQueue = new LinkedBlockingQueue<> ();
+        this.queue = new LinkedList<>();
+        this.lock = new Object();
     }
 
     @Override
     public void run() {
         while (true) {
+            Runnable runnable = null;
             try {
-                Runnable runnable = linkedBlockingQueue.take();
-                runnable.run();
+                synchronized (lock) {
+                    while (queue.isEmpty()) {
+                        lock.wait();
+                    }
+                    runnable = queue.poll();
+                }
+                if (runnable != null) runnable.run();
             } catch (Exception e) {
                 System.out.println("The replication task was interrupted: " + e.getMessage());
             }
@@ -22,6 +31,9 @@ public class AsyncReplicationService implements Runnable {
     }
 
     public void addTask(Runnable runnable) {
-        linkedBlockingQueue.offer(runnable);
+        synchronized (lock) {
+            queue.offer(runnable);
+            lock.notifyAll();
+        }
     }
 }

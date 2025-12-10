@@ -30,6 +30,7 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
     private final ElevatedRootNodeAccess rootNode;
     private Thread updatingHeartBeatThread;
     private Thread replicationOFDataUsingNeighbourDatabaseNodes;
+    private BigInteger logicalTimestampBeforeElectingNodeAsLeader;
 
     public DatabaseNode(String databaseNodeName, DatabaseNodeType databaseNodeType, ElevatedRootNodeAccess rootNode) {
         this.databaseNodeName = databaseNodeName;
@@ -38,6 +39,8 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
         this.writeAheadLog = new WriteAheadLog();
         this.databaseNodeType = databaseNodeType;
         this.rootNode = rootNode;
+        this.logicalTimestampBeforeElectingNodeAsLeader = new BigInteger(String.valueOf(-1));
+
         updatingFollowerDatabaseNodesThread = new Thread(() -> {
             System.out.printf("[%s]: Starting a thread to update the follower database nodes with the latest data\n",
                     this.databaseNodeName);
@@ -210,13 +213,23 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
 
     @Override
     public BigInteger getMaximumLogicalTimestamp() {
-        return writeAheadLog.getMaximumLogicalTimestamp();
+        if (logicalTimestampBeforeElectingNodeAsLeader.equals(new BigInteger(String.valueOf(-1)))) {
+            return writeAheadLog.getMaximumLogicalTimestamp();
+        }
+        return logicalTimestampBeforeElectingNodeAsLeader.min(writeAheadLog.getMaximumLogicalTimestamp());
     }
 
     @Override
     public HashMap<BigInteger, OperationDetails> getLogsAfterTheGivenTimestamp(BigInteger maximumLogicalTimestamp) {
         synchronized (lock) {
             return writeAheadLog.getLogsAfterTheGivenTimestamp(maximumLogicalTimestamp);
+        }
+    }
+
+    @Override
+    public void leaderElectionStartedStoreLogicalTimestamp() {
+        synchronized (lock) {
+            this.logicalTimestampBeforeElectingNodeAsLeader = writeAheadLog.getMaximumLogicalTimestamp();
         }
     }
 
