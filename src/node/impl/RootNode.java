@@ -26,6 +26,7 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
     private final String rootNodeName;
     private final HashMap<ElevatedDatabaseNodeAccess, LocalDateTime> databaseNodesHeartBeat;
     private final HashMap<ElevatedDatabaseNodeAccess, Boolean> databaseNodesStatus;
+    private final HashMap<ElevatedDatabaseNodeAccess, BigInteger> maximumLogicalTimestampOfDatabaseNodes;
     private LeaderDatabaseNodeAccess leaderDatabaseNode;
     private final List<FollowerDatabaseNodeAccess> followerDatabaseNodes;
     private boolean isActive;
@@ -39,6 +40,7 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
         this.rootNodeName = rootNodeName;
         this.databaseNodesHeartBeat = new HashMap<>();
         this.databaseNodesStatus = new HashMap<>();
+        this.maximumLogicalTimestampOfDatabaseNodes = new HashMap<>();
         this.followerDatabaseNodes = new ArrayList<>();
         this.isActive = true;
         logicalTimestamp = new BigInteger(String.valueOf(1));
@@ -186,7 +188,14 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
             }
             System.out.printf("[%s]: %s -> Starting a asynchronous replication of data using the neighbour database nodes\n",
                     this.rootNodeName, databaseNode.getDatabaseNodeName());
-            BigInteger maximumLogicalTimestamp = databaseNode.getMaximumLogicalTimestamp();
+            BigInteger maximumLogicalTimestampBeforeLeaderElection = maximumLogicalTimestampOfDatabaseNodes.get(databaseNode);
+            BigInteger currentMaximumLogicalTimestamp = databaseNode.getMaximumLogicalTimestamp();
+            BigInteger maximumLogicalTimestamp;
+            if (maximumLogicalTimestampBeforeLeaderElection.equals(new BigInteger(String.valueOf(-1)))) {
+                maximumLogicalTimestamp = currentMaximumLogicalTimestamp;
+            } else {
+                maximumLogicalTimestamp = maximumLogicalTimestampBeforeLeaderElection.min(currentMaximumLogicalTimestamp);
+            }
             List<FollowerDatabaseNodeAccess> followerDatabaseNodesCopy = new ArrayList<>(followerDatabaseNodes);
 
             int counter = 0;
@@ -262,7 +271,9 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
                     continue;
                 }
                 System.out.printf("[%s]: Notifying all the database node, to store the logical timestamp\n", this.rootNodeName);
-                notifyDatabaseNodesToStoreTheLatestLogicalTimestamp();
+                // update the current logical timestamp, so that we can start the replication of data from this,
+                // logical timestamp. To prevent loss of data.
+                updateTheLogicalTimestampBeforeNewLeaderElection();
                 System.out.printf("[%s]: Found a leader, database node name: %s\n", this.rootNodeName,
                         newLeaderDatabaseNode.getDatabaseNodeName());
                 newLeaderDatabaseNode.elevateToLeaderDatabaseNode();
@@ -272,9 +283,9 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
         }
     }
 
-    private void notifyDatabaseNodesToStoreTheLatestLogicalTimestamp() {
-        for (var databaseNodes : databaseNodesStatus.keySet()) {
-            databaseNodes.leaderElectionStartedStoreLogicalTimestamp();
+    private void updateTheLogicalTimestampBeforeNewLeaderElection() {
+        for (var databaseNode : databaseNodesStatus.keySet()) {
+            maximumLogicalTimestampOfDatabaseNodes.put(databaseNode, databaseNode.getMaximumLogicalTimestamp());
         }
     }
 
@@ -306,6 +317,8 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
         leaderDatabaseNodeThread.start();
         databaseNodesHeartBeat.put((ElevatedDatabaseNodeAccess) leaderDatabaseNode, LocalDateTime.now());
         databaseNodesStatus.put((ElevatedDatabaseNodeAccess) leaderDatabaseNode, true);
+        maximumLogicalTimestampOfDatabaseNodes.put((ElevatedDatabaseNodeAccess) leaderDatabaseNode,
+                new BigInteger(String.valueOf(-1)));
         followerDatabaseNodes.add((FollowerDatabaseNodeAccess) leaderDatabaseNode);
         return leaderDatabaseNode;
     }
@@ -318,6 +331,8 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
             followerDatabaseNodeThread.start();
             databaseNodesHeartBeat.put((ElevatedDatabaseNodeAccess) followerDatabaseNode, LocalDateTime.now());
             databaseNodesStatus.put((ElevatedDatabaseNodeAccess) followerDatabaseNode, true);
+            maximumLogicalTimestampOfDatabaseNodes.put((ElevatedDatabaseNodeAccess) followerDatabaseNode,
+                    new BigInteger(String.valueOf(-1)));
             followerDatabaseNodes.add(followerDatabaseNode);
         }
     }

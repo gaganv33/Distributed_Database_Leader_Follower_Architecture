@@ -11,5 +11,4 @@ public interface ElevatedDatabaseNodeAccess extends LeaderDatabaseNodeAccess, Fo
     void replicateData(HashMap<BigInteger, OperationDetails> log) throws DatabaseNodeInActiveException;
     BigInteger getMaximumLogicalTimestamp();
     HashMap<BigInteger, OperationDetails> getLogsAfterTheGivenTimestamp(BigInteger maximumLogicalTimestamp);
-    void leaderElectionStartedStoreLogicalTimestamp();
 }
