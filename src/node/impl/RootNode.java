@@ -23,6 +23,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
+    private final int rootNodeId;
     private final String rootNodeName;
     private final HashMap<ElevatedDatabaseNodeAccess, LocalDateTime> databaseNodesHeartBeat;
     private final HashMap<ElevatedDatabaseNodeAccess, Boolean> databaseNodesStatus;
@@ -36,8 +37,9 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
     private final AtomicInteger index = new AtomicInteger(0);
     private final AsyncReplicationService asyncReplicationService;
 
-    public RootNode(String rootNodeName, int numberOfDatabaseNodes) {
-        this.rootNodeName = rootNodeName;
+    public RootNode(int rootNodeId, int numberOfDatabaseNodes) {
+        this.rootNodeId = rootNodeId;
+        this.rootNodeName = String.format("Root Node-%d", rootNodeId);
         this.databaseNodesHeartBeat = new HashMap<>();
         this.databaseNodesStatus = new HashMap<>();
         this.maximumLogicalTimestampOfDatabaseNodes = new HashMap<>();
@@ -311,7 +313,7 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
     }
 
     private LeaderDatabaseNodeAccess getAndStartLeaderDatabaseNode() {
-        LeaderDatabaseNodeAccess leaderDatabaseNode = new DatabaseNode("Database Node-1",
+        LeaderDatabaseNodeAccess leaderDatabaseNode = new DatabaseNode(rootNodeId, 1,
                 DatabaseNodeType.LEADER, this);
         Thread leaderDatabaseNodeThread = new Thread(leaderDatabaseNode);
         leaderDatabaseNodeThread.start();
@@ -325,7 +327,7 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
 
     private void startFollowerDatabaseNode(int numberOfFollowerNodes) {
         for (int i = 0; i < numberOfFollowerNodes; i++) {
-            FollowerDatabaseNodeAccess followerDatabaseNode = new DatabaseNode(String.format("Database Node-%d", i + 2),
+            FollowerDatabaseNodeAccess followerDatabaseNode = new DatabaseNode(rootNodeId, i + 2,
                     DatabaseNodeType.FOLLOWER, this);
             Thread followerDatabaseNodeThread = new Thread(followerDatabaseNode);
             followerDatabaseNodeThread.start();

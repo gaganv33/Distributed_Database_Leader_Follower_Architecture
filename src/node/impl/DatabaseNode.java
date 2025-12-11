@@ -31,8 +31,9 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
     private Thread updatingHeartBeatThread;
     private Thread replicationOFDataUsingNeighbourDatabaseNodes;
 
-    public DatabaseNode(String databaseNodeName, DatabaseNodeType databaseNodeType, ElevatedRootNodeAccess rootNode) {
-        this.databaseNodeName = databaseNodeName;
+    public DatabaseNode(int rootNodeId, int databaseNodeId, DatabaseNodeType databaseNodeType,
+                        ElevatedRootNodeAccess rootNode) {
+        this.databaseNodeName = String.format("Database Node-%d.%d", rootNodeId, databaseNodeId);
         this.isActive = true;
         this.data = new HashMap<>();
         this.writeAheadLog = new WriteAheadLog();

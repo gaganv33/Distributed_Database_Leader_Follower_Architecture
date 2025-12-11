@@ -3,7 +3,7 @@ import util.RandomHelper;
 
 public class Main {
     public static void main(String[] args) throws InterruptedException {
-        RootNode rootNode = new RootNode("Root Node-1", 3);
+        RootNode rootNode = new RootNode(1, 3);
 
         while (true) {
             try {
