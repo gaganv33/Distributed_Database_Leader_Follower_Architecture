@@ -190,7 +190,8 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
             }
             System.out.printf("[%s]: %s -> Starting a asynchronous replication of data using the neighbour database nodes\n",
                     this.rootNodeName, databaseNode.getDatabaseNodeName());
-            BigInteger maximumLogicalTimestampBeforeLeaderElection = maximumLogicalTimestampOfDatabaseNodes.get(databaseNode);
+            BigInteger maximumLogicalTimestampBeforeLeaderElection =
+                    getAndSetMaximumLogicalTimestampBeforeLeaderElectionForDatabaseNode(databaseNode);
             BigInteger currentMaximumLogicalTimestamp = databaseNode.getMaximumLogicalTimestamp();
             BigInteger maximumLogicalTimestamp;
             if (maximumLogicalTimestampBeforeLeaderElection.equals(new BigInteger(String.valueOf(-1)))) {
@@ -236,6 +237,12 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
             throw new ReplicationRetryExceededException(String.format("[%s]: Replication retry exceeded", this.rootNodeName));
         };
         asyncReplicationService.addTask(runnable);
+    }
+
+    private BigInteger getAndSetMaximumLogicalTimestampBeforeLeaderElectionForDatabaseNode(ElevatedDatabaseNodeAccess databaseNode) {
+        BigInteger maximumLogicalTimestamp = maximumLogicalTimestampOfDatabaseNodes.get(databaseNode);
+        maximumLogicalTimestampOfDatabaseNodes.put(databaseNode, new BigInteger(String.valueOf(-1)));
+        return maximumLogicalTimestamp;
     }
 
     private void startingRootNode() {
@@ -287,7 +294,13 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
 
     private void updateTheLogicalTimestampBeforeNewLeaderElection() {
         for (var databaseNode : databaseNodesStatus.keySet()) {
-            maximumLogicalTimestampOfDatabaseNodes.put(databaseNode, databaseNode.getMaximumLogicalTimestamp());
+            BigInteger previousMaximumLogicalTimestamp = maximumLogicalTimestampOfDatabaseNodes.get(databaseNode);
+            if (previousMaximumLogicalTimestamp.equals(new BigInteger(String.valueOf(-1)))) {
+                maximumLogicalTimestampOfDatabaseNodes.put(databaseNode, databaseNode.getMaximumLogicalTimestamp());
+            } else {
+                maximumLogicalTimestampOfDatabaseNodes.put(databaseNode,
+                        previousMaximumLogicalTimestamp.min(databaseNode.getMaximumLogicalTimestamp()));
+            }
         }
     }
 
