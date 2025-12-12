@@ -2,6 +2,7 @@ package node.impl;
 
 import config.RootNodeConfig;
 import data.DatabaseNodeType;
+import data.HybridLogicalClock;
 import data.operationDetails.OperationDetails;
 import exception.*;
 import node.databaseNode.ElevatedDatabaseNodeAccess;
@@ -10,28 +11,23 @@ import node.databaseNode.LeaderDatabaseNodeAccess;
 import node.rootNode.BasicRootNodeAccess;
 import node.rootNode.ElevatedRootNodeAccess;
 import service.AsyncReplicationService;
+import util.HybridLogicalClockComparator;
 import util.RandomHelper;
 
-import java.math.BigInteger;
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Function;
-import java.util.stream.Collectors;
 
 public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
     private final int rootNodeId;
     private final String rootNodeName;
     private final HashMap<ElevatedDatabaseNodeAccess, LocalDateTime> databaseNodesHeartBeat;
     private final HashMap<ElevatedDatabaseNodeAccess, Boolean> databaseNodesStatus;
-    private final HashMap<ElevatedDatabaseNodeAccess, BigInteger> maximumLogicalTimestampOfDatabaseNodes;
+    private final HashMap<ElevatedDatabaseNodeAccess, HybridLogicalClock> maximumHybridLogicalTimestampOfDatabaseNodes;
     private LeaderDatabaseNodeAccess leaderDatabaseNode;
     private final List<FollowerDatabaseNodeAccess> followerDatabaseNodes;
     private boolean isActive;
-    private BigInteger logicalTimestamp;
     private Thread cleaningInactiveDatabaseNodes;
     private final Object lock = new Object();
     private final AtomicInteger index = new AtomicInteger(0);
@@ -42,10 +38,9 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
         this.rootNodeName = String.format("Root Node-%d", rootNodeId);
         this.databaseNodesHeartBeat = new HashMap<>();
         this.databaseNodesStatus = new HashMap<>();
-        this.maximumLogicalTimestampOfDatabaseNodes = new HashMap<>();
+        this.maximumHybridLogicalTimestampOfDatabaseNodes = new HashMap<>();
         this.followerDatabaseNodes = new ArrayList<>();
         this.isActive = true;
-        logicalTimestamp = new BigInteger(String.valueOf(1));
         this.asyncReplicationService = new AsyncReplicationService();
         Thread asyncReplicationServiceThread = new Thread(this.asyncReplicationService);
         asyncReplicationServiceThread.start();
@@ -92,6 +87,7 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
         this.cleaningInactiveDatabaseNodes.start();
     }
 
+    @Override
     public String get(String key) throws DatabaseNodeInActiveException, DataNotFoundException, RootNodeDownException {
         System.out.printf("[%s]: Get request for key: %s\n", this.rootNodeName, key);
         List<FollowerDatabaseNodeAccess> followerDatabaseNodeCopy = new ArrayList<>(followerDatabaseNodes);
@@ -122,12 +118,12 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
                 "try again after some time", this.rootNodeName));
     }
 
-    public void write(String key, String value) throws DatabaseNodeInActiveException, NotLeaderException,
-            RootNodeDownException {
+    @Override
+    public void write(HybridLogicalClock hybridLogicalClock, String key, String value) throws
+            DatabaseNodeInActiveException, NotLeaderException, RootNodeDownException {
         System.out.printf("[%s]: Write request for key: %s, value : %s\n", this.rootNodeName, key, value);
         try {
-            leaderDatabaseNode.write(logicalTimestamp, key, value);
-            logicalTimestamp = logicalTimestamp.add(BigInteger.ONE);
+            leaderDatabaseNode.write(hybridLogicalClock, key, value);
         } catch (DatabaseNodeInActiveException e) {
             // start leader election
             leaderElection();
@@ -140,11 +136,12 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
         }
     }
 
-    public void delete(String key) throws DatabaseNodeInActiveException, NotLeaderException, RootNodeDownException {
+    @Override
+    public void delete(HybridLogicalClock hybridLogicalClock, String key) throws DatabaseNodeInActiveException,
+            NotLeaderException, RootNodeDownException {
         System.out.printf("[%s]: Delete request for key: %s\n", this.rootNodeName, key);
         try {
-            leaderDatabaseNode.delete(logicalTimestamp, key);
-            logicalTimestamp = logicalTimestamp.add(BigInteger.ONE);
+            leaderDatabaseNode.delete(hybridLogicalClock, key);
         } catch (DatabaseNodeInActiveException e) {
             // start leader election
             leaderElection();
@@ -171,7 +168,7 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
     }
 
     @Override
-    public void replicationOfDataWithFollowerDatabaseNodes(HashMap<BigInteger, OperationDetails> temporaryLogData) {
+    public void replicationOfDataWithFollowerDatabaseNodes(HashMap<HybridLogicalClock, OperationDetails> temporaryLogData) {
         System.out.printf("[%s]: Replicating data across all the database nodes\n", this.rootNodeName);
         for (var followerDatabaseNode : followerDatabaseNodes) {
             try {
@@ -186,23 +183,33 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
     public void replicationOfDataBetweenDatabaseNodes(ElevatedDatabaseNodeAccess databaseNode) {
         Runnable runnable = () -> {
             if (followerDatabaseNodes.isEmpty()) {
-                throw new RootNodeDownException(String.format("[%s]: The root node is down\n", this.rootNodeName));
+                throw new RootNodeDownException(String.format("[%s]: The root node is down, since all database nodes are down\n",
+                        this.rootNodeName));
             }
             System.out.printf("[%s]: %s -> Starting a asynchronous replication of data using the neighbour database nodes\n",
                     this.rootNodeName, databaseNode.getDatabaseNodeName());
-            BigInteger maximumLogicalTimestampBeforeLeaderElection =
-                    getAndSetMaximumLogicalTimestampBeforeLeaderElectionForDatabaseNode(databaseNode);
-            BigInteger currentMaximumLogicalTimestamp = databaseNode.getMaximumLogicalTimestamp();
-            BigInteger maximumLogicalTimestamp;
-            if (maximumLogicalTimestampBeforeLeaderElection.equals(new BigInteger(String.valueOf(-1)))) {
-                maximumLogicalTimestamp = currentMaximumLogicalTimestamp;
+
+            // Getting the maximum hybrid  logical timestamp
+            HybridLogicalClock maximumHybridLogicalClockBeforeLeaderElection =
+                    maximumHybridLogicalTimestampOfDatabaseNodes.get(databaseNode);
+            HybridLogicalClock currentMaximumHybridLogicalClock = databaseNode.getMaximumHybridLogicalClock();
+            HybridLogicalClock maximumHybridLogicalClock;
+
+            if (maximumHybridLogicalClockBeforeLeaderElection == null) {
+                maximumHybridLogicalClock = currentMaximumHybridLogicalClock;
             } else {
-                maximumLogicalTimestamp = maximumLogicalTimestampBeforeLeaderElection.min(currentMaximumLogicalTimestamp);
+                maximumHybridLogicalClock = Collections.min(
+                        Arrays.asList(maximumHybridLogicalClockBeforeLeaderElection, currentMaximumHybridLogicalClock),
+                        HybridLogicalClockComparator.getHybridLogicalClock());
             }
+
+            // Creating a copy of the follower database nodes, so that we work on a consistent view of the follower
+            // database nodes. Since, there might be another thread, which will remove follower nodes which are inactive.
             List<FollowerDatabaseNodeAccess> followerDatabaseNodesCopy = new ArrayList<>(followerDatabaseNodes);
 
             int counter = 0;
             int totalFailedAttempts = 0;
+            boolean isFailed = false;
 
             while (counter < RootNodeConfig.retryCountForFindDatabaseNodeForReplication) {
                 int index = RandomHelper.getRandomIntegerInRange(0, followerDatabaseNodesCopy.size());
@@ -215,8 +222,8 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
                     totalFailedAttempts++;
                 } else {
                     if (!replicaDatabaseNode.getDatabaseNodeName().equals(databaseNode.getDatabaseNodeName())) {
-                        HashMap<BigInteger, OperationDetails> logsAfterTheGivenTimestamp =
-                                ((ElevatedDatabaseNodeAccess) replicaDatabaseNode).getLogsAfterTheGivenTimestamp(maximumLogicalTimestamp);
+                        HashMap<HybridLogicalClock, OperationDetails> logsAfterTheGivenTimestamp =
+                                ((ElevatedDatabaseNodeAccess) replicaDatabaseNode).getLogsAfterTheGivenTimestamp(maximumHybridLogicalClock);
                         try {
                             databaseNode.replicateData(logsAfterTheGivenTimestamp);
                             System.out.printf("[%s]: %s -> Completed replicating data from the neighbour database node: %s\n",
@@ -231,18 +238,21 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
                 }
 
                 if (totalFailedAttempts > RootNodeConfig.retryLimitForFindingDatabaseNodeForReplication) {
+                    isFailed = true;
                     break;
                 }
             }
-            throw new ReplicationRetryExceededException(String.format("[%s]: Replication retry exceeded", this.rootNodeName));
+            if (isFailed) {
+                throw new ReplicationRetryExceededException(String.format("[%s]: Replication retry exceeded", this.rootNodeName));
+            } else {
+                clearMaximumHybridLogicalTimestamp(databaseNode);
+            }
         };
         asyncReplicationService.addTask(runnable);
     }
 
-    private BigInteger getAndSetMaximumLogicalTimestampBeforeLeaderElectionForDatabaseNode(ElevatedDatabaseNodeAccess databaseNode) {
-        BigInteger maximumLogicalTimestamp = maximumLogicalTimestampOfDatabaseNodes.get(databaseNode);
-        maximumLogicalTimestampOfDatabaseNodes.put(databaseNode, new BigInteger(String.valueOf(-1)));
-        return maximumLogicalTimestamp;
+    private void clearMaximumHybridLogicalTimestamp(ElevatedDatabaseNodeAccess databaseNode) {
+        maximumHybridLogicalTimestampOfDatabaseNodes.put(databaseNode, null);
     }
 
     private void startingRootNode() {
@@ -282,7 +292,7 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
                 System.out.printf("[%s]: Notifying all the database node, to store the logical timestamp\n", this.rootNodeName);
                 // update the current logical timestamp, so that we can start the replication of data from this,
                 // logical timestamp. To prevent loss of data.
-                updateTheLogicalTimestampBeforeNewLeaderElection();
+                updateTheHybridLogicalTimestampBeforeNewLeaderElection();
                 System.out.printf("[%s]: Found a leader, database node name: %s\n", this.rootNodeName,
                         newLeaderDatabaseNode.getDatabaseNodeName());
                 newLeaderDatabaseNode.elevateToLeaderDatabaseNode();
@@ -292,14 +302,19 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
         }
     }
 
-    private void updateTheLogicalTimestampBeforeNewLeaderElection() {
+    private void updateTheHybridLogicalTimestampBeforeNewLeaderElection() {
         for (var databaseNode : databaseNodesStatus.keySet()) {
-            BigInteger previousMaximumLogicalTimestamp = maximumLogicalTimestampOfDatabaseNodes.get(databaseNode);
-            if (previousMaximumLogicalTimestamp.equals(new BigInteger(String.valueOf(-1)))) {
-                maximumLogicalTimestampOfDatabaseNodes.put(databaseNode, databaseNode.getMaximumLogicalTimestamp());
+            HybridLogicalClock currentmaximumHybridLogicalClock = maximumHybridLogicalTimestampOfDatabaseNodes.get(databaseNode);
+            // updating the hybrid logical timestamp, before leader election. So that we can update the database node,
+            // with the latest data using the maximum hybrid logical timestamp.
+            if (currentmaximumHybridLogicalClock == null) {
+                maximumHybridLogicalTimestampOfDatabaseNodes.put(databaseNode, databaseNode.getMaximumHybridLogicalClock());
             } else {
-                maximumLogicalTimestampOfDatabaseNodes.put(databaseNode,
-                        previousMaximumLogicalTimestamp.min(databaseNode.getMaximumLogicalTimestamp()));
+                HybridLogicalClock newHybridLogicalClock = Collections.min(
+                        Arrays.asList(currentmaximumHybridLogicalClock, databaseNode.getMaximumHybridLogicalClock()),
+                        HybridLogicalClockComparator.getHybridLogicalClock()
+                );
+                maximumHybridLogicalTimestampOfDatabaseNodes.put(databaseNode, newHybridLogicalClock);
             }
         }
     }
@@ -332,8 +347,7 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
         leaderDatabaseNodeThread.start();
         databaseNodesHeartBeat.put((ElevatedDatabaseNodeAccess) leaderDatabaseNode, LocalDateTime.now());
         databaseNodesStatus.put((ElevatedDatabaseNodeAccess) leaderDatabaseNode, true);
-        maximumLogicalTimestampOfDatabaseNodes.put((ElevatedDatabaseNodeAccess) leaderDatabaseNode,
-                new BigInteger(String.valueOf(-1)));
+        maximumHybridLogicalTimestampOfDatabaseNodes.put((ElevatedDatabaseNodeAccess) leaderDatabaseNode, null);
         followerDatabaseNodes.add((FollowerDatabaseNodeAccess) leaderDatabaseNode);
         return leaderDatabaseNode;
     }
@@ -346,8 +360,7 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
             followerDatabaseNodeThread.start();
             databaseNodesHeartBeat.put((ElevatedDatabaseNodeAccess) followerDatabaseNode, LocalDateTime.now());
             databaseNodesStatus.put((ElevatedDatabaseNodeAccess) followerDatabaseNode, true);
-            maximumLogicalTimestampOfDatabaseNodes.put((ElevatedDatabaseNodeAccess) followerDatabaseNode,
-                    new BigInteger(String.valueOf(-1)));
+            maximumHybridLogicalTimestampOfDatabaseNodes.put((ElevatedDatabaseNodeAccess) followerDatabaseNode, null);
             followerDatabaseNodes.add(followerDatabaseNode);
         }
     }

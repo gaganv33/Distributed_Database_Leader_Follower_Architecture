@@ -2,6 +2,7 @@ package node.impl;
 
 import config.DatabaseNodeConfig;
 import data.DatabaseNodeType;
+import data.HybridLogicalClock;
 import data.OperationType;
 import data.Value;
 import data.operationDetails.OperationDetails;
@@ -16,6 +17,8 @@ import node.rootNode.ElevatedRootNodeAccess;
 import util.RandomHelper;
 
 import java.math.BigInteger;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 
 public class DatabaseNode implements ElevatedDatabaseNodeAccess {
@@ -51,7 +54,7 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
                     Thread.currentThread().interrupt();
                     return;
                 }
-                HashMap<BigInteger, OperationDetails> temporaryLogData = new HashMap<>(temporaryLog.getTemporaryLog());
+                HashMap<HybridLogicalClock, OperationDetails> temporaryLogData = new HashMap<>(temporaryLog.getTemporaryLog());
                 temporaryLog.clearTemporaryLog();
                 this.rootNode.replicationOfDataWithFollowerDatabaseNodes(temporaryLogData);
             }
@@ -107,7 +110,7 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
     }
 
     @Override
-    public void write(BigInteger logicalTimestamp, String key, String value) throws DatabaseNodeInActiveException, NotLeaderException {
+    public void write(HybridLogicalClock hybridLogicalClock, String key, String value) throws DatabaseNodeInActiveException, NotLeaderException {
         synchronized (lock) {
             if (!isActive) {
                 throw new DatabaseNodeInActiveException(String.format("[%s]: The database node is inactive.", this.databaseNodeName));
@@ -117,17 +120,26 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
             }
             if (data.containsKey(key)) {
                 Value valueObject = data.get(key);
-                if (logicalTimestamp.compareTo(valueObject.getLogicalClock()) > 0) {
-                    updateCommit(logicalTimestamp, key, value);
+                HybridLogicalClock currentHybridLogicalClock = valueObject.getHybridLogicalClock();
+
+                HybridLogicalClock newHybridLogicalClock = getHybridLogicalClock(
+                        hybridLogicalClock, currentHybridLogicalClock);
+                if (newHybridLogicalClock == null) {
+                    System.out.printf("[%s]: The write request timestamp is older than the records timestamp, so " +
+                            "not performing the update request\n", this.databaseNodeName);
+                    return;
                 }
+                System.out.printf("[%s]: Executing the write request\n", this.databaseNodeName);
+                updateCommit(newHybridLogicalClock, key, value);
             } else {
-                updateCommit(logicalTimestamp, key, value);
+                hybridLogicalClock.incrementLogicalClockByOne();
+                updateCommit(hybridLogicalClock, key, value);
             }
         }
     }
 
     @Override
-    public void delete(BigInteger logicalTimestamp, String key) throws DatabaseNodeInActiveException, NotLeaderException {
+    public void delete(HybridLogicalClock hybridLogicalClock, String key) throws DatabaseNodeInActiveException, NotLeaderException {
         synchronized (lock) {
             if (!isActive) {
                 throw new DatabaseNodeInActiveException(String.format("[%s]: The database node is inactive.", this.databaseNodeName));
@@ -137,9 +149,17 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
             }
             if (data.containsKey(key)) {
                 Value valueObject = data.get(key);
-                if (logicalTimestamp.compareTo(valueObject.getLogicalClock()) > 0) {
-                    deleteCommit(logicalTimestamp, key);
+                HybridLogicalClock currentHybridLogicalClock = valueObject.getHybridLogicalClock();
+
+                HybridLogicalClock newHybridLogicalClock = getHybridLogicalClock(hybridLogicalClock, currentHybridLogicalClock);
+
+                if (newHybridLogicalClock == null) {
+                    System.out.printf("[%s]: The delete request timestamp is older than the records timestamp, so " +
+                            "not performing the delete request\n", this.databaseNodeName);
+                    return;
                 }
+                System.out.printf("[%s]: Executing the delete request\n", this.databaseNodeName);
+                deleteCommit(newHybridLogicalClock, key);
             }
         }
     }
@@ -183,10 +203,10 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
     }
 
     @Override
-    public void replicateData(HashMap<BigInteger, OperationDetails> log) throws DatabaseNodeInActiveException {
+    public void replicateData(HashMap<HybridLogicalClock, OperationDetails> log) throws DatabaseNodeInActiveException {
         System.out.printf("[%s]: Starting the replication of data\n", this.databaseNodeName);
         for (var entry : log.entrySet()) {
-            BigInteger logicalTimestamp = entry.getKey();
+             HybridLogicalClock hybridLogicalClock = entry.getKey();
             OperationDetails operationDetails = entry.getValue();
             OperationType operationType = operationDetails.getOperationType();
             String key = operationDetails.getKey();
@@ -194,14 +214,14 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
             if (operationType == OperationType.UPDATE) {
                 String value = ((UpdateOperationDetails) operationDetails).getValue();
                 try {
-                    this.replicaWrite(logicalTimestamp, key, value);
+                    this.replicaWrite(hybridLogicalClock, key, value);
                 } catch (DatabaseNodeInActiveException e) {
                     throw new DatabaseNodeInActiveException(String.format("[%s]: The database node is not active, " +
                                     "so replication of data is unsuccessful\n", this.databaseNodeName));
                 }
             } else {
                 try {
-                    replicaDelete(logicalTimestamp, key);
+                    this.replicaDelete(hybridLogicalClock, key);
                 } catch (DatabaseNodeInActiveException e) {
                     throw new DatabaseNodeInActiveException(String.format("[%s]: The database node is not active, " +
                             "so replication of data is unsuccessful\n", this.databaseNodeName));
@@ -211,14 +231,16 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
     }
 
     @Override
-    public BigInteger getMaximumLogicalTimestamp() {
-        return writeAheadLog.getMaximumLogicalTimestamp();
+    public HybridLogicalClock getMaximumHybridLogicalClock() {
+        synchronized (lock) {
+            return writeAheadLog.getMaximumHybridLogicalClock();
+        }
     }
 
     @Override
-    public HashMap<BigInteger, OperationDetails> getLogsAfterTheGivenTimestamp(BigInteger maximumLogicalTimestamp) {
+    public HashMap<HybridLogicalClock, OperationDetails> getLogsAfterTheGivenTimestamp(HybridLogicalClock hybridLogicalClock) {
         synchronized (lock) {
-            return writeAheadLog.getLogsAfterTheGivenTimestamp(maximumLogicalTimestamp);
+            return writeAheadLog.getLogsAfterTheGivenTimestamp(hybridLogicalClock);
         }
     }
 
@@ -239,32 +261,72 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
         }
     }
 
-    private void replicaWrite(BigInteger logicalTimestamp, String key, String value) throws DatabaseNodeInActiveException {
+    private HybridLogicalClock getHybridLogicalClock(HybridLogicalClock hybridLogicalClock,
+                                                     HybridLogicalClock currentHybridLogicalClock) {
+        HybridLogicalClock newHybridLogicalClock;
+        if (hybridLogicalClock.getPhysicalClock().isAfter(currentHybridLogicalClock.getPhysicalClock())) {
+            newHybridLogicalClock = new HybridLogicalClock(
+                    hybridLogicalClock.getPhysicalClock(),
+                    hybridLogicalClock.getLogicalClock().add(BigInteger.ONE)
+            );
+        } else if (hybridLogicalClock.getPhysicalClock().isEqual(currentHybridLogicalClock.getPhysicalClock())) {
+            if (hybridLogicalClock.getLogicalClock().compareTo(currentHybridLogicalClock.getLogicalClock()) >= 0) {
+                newHybridLogicalClock = new HybridLogicalClock(
+                        hybridLogicalClock.getPhysicalClock(),
+                        Collections.max(Arrays.asList(hybridLogicalClock.getLogicalClock(),
+                                currentHybridLogicalClock.getLogicalClock())).add(BigInteger.ONE)
+                );
+            } else {
+                return null;
+            }
+        } else {
+            return null;
+        }
+        return newHybridLogicalClock;
+    }
+
+    private void replicaWrite(HybridLogicalClock hybridLogicalClock, String key, String value) throws DatabaseNodeInActiveException {
         synchronized (lock) {
             if (!isActive) {
                 throw new DatabaseNodeInActiveException(String.format("[%s]: The database node is inactive.", this.databaseNodeName));
             }
             if (data.containsKey(key)) {
                 Value valueObject = data.get(key);
-                if (logicalTimestamp.compareTo(valueObject.getLogicalClock()) > 0) {
-                    updateReplicaCommit(logicalTimestamp, key, value);
+                HybridLogicalClock currentHybridLogicalClock = valueObject.getHybridLogicalClock();
+
+                HybridLogicalClock newHybridLogicalClock = getHybridLogicalClock(hybridLogicalClock, currentHybridLogicalClock);
+
+                if (newHybridLogicalClock == null) {
+                    System.out.printf("[%s]: The replica write request timestamp is older than the records timestamp, so " +
+                            "not performing the replica write request\n", this.databaseNodeName);
+                    return;
                 }
+                System.out.printf("[%s]: Executing the replica write request\n", this.databaseNodeName);
+                updateReplicaCommit(newHybridLogicalClock, key, value);
             } else {
-                updateReplicaCommit(logicalTimestamp, key, value);
+                hybridLogicalClock.incrementLogicalClockByOne();
+                updateReplicaCommit(hybridLogicalClock, key, value);
             }
         }
     }
 
-    private void replicaDelete(BigInteger logicalTimestamp, String key) throws DatabaseNodeInActiveException {
+    private void replicaDelete(HybridLogicalClock hybridLogicalClock, String key) throws DatabaseNodeInActiveException {
         synchronized (lock) {
             if (!isActive) {
                 throw new DatabaseNodeInActiveException(String.format("[%s]: The database node is inactive.", this.databaseNodeName));
             }
             if (data.containsKey(key)) {
                 Value valueObject = data.get(key);
-                if (logicalTimestamp.compareTo(valueObject.getLogicalClock()) > 0) {
-                    deleteReplicaCommit(logicalTimestamp, key);
+                HybridLogicalClock currentHybridLogicalClock = valueObject.getHybridLogicalClock();
+
+                HybridLogicalClock newHybridLogicalClock = getHybridLogicalClock(hybridLogicalClock, currentHybridLogicalClock);
+                if (newHybridLogicalClock == null) {
+                    System.out.printf("[%s]: The replica delete request timestamp is older than the records timestamp, so " +
+                            "not performing the replica delete request\n", this.databaseNodeName);
+                    return;
                 }
+                System.out.printf("[%s]: Executing the replica delete request\n", this.databaseNodeName);
+                deleteReplicaCommit(newHybridLogicalClock, key);
             }
         }
     }
@@ -300,44 +362,44 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
         }
     }
 
-    private void updateCommit(BigInteger logicalTimestamp, String key, String value) {
+    private void updateCommit(HybridLogicalClock hybridLogicalClock, String key, String value) {
         synchronized (lock) {
-            temporaryLog.addUpdateLog(logicalTimestamp, key, value);
-            writeAheadLog.addUpdateLog(logicalTimestamp, key, value);
+            temporaryLog.addUpdateLog(hybridLogicalClock, key, value);
+            writeAheadLog.addUpdateLog(hybridLogicalClock, key, value);
             if (data.containsKey(key)) {
                 Value valueObject = data.get(key);
                 valueObject.setValue(value);
-                valueObject.setLogicalClock(logicalTimestamp);
+                valueObject.setHybridLogicalClock(hybridLogicalClock);
             } else {
-                data.put(key, new Value(logicalTimestamp, value));
+                data.put(key, new Value(hybridLogicalClock, value));
             }
         }
     }
 
-    private void updateReplicaCommit(BigInteger logicalTimestamp, String key, String value) {
+    private void updateReplicaCommit(HybridLogicalClock hybridLogicalClock, String key, String value) {
         synchronized (lock) {
-            writeAheadLog.addUpdateLog(logicalTimestamp, key, value);
+            writeAheadLog.addUpdateLog(hybridLogicalClock, key, value);
             if (data.containsKey(key)) {
                 Value valueObject = data.get(key);
                 valueObject.setValue(value);
-                valueObject.setLogicalClock(logicalTimestamp);
+                valueObject.setHybridLogicalClock(hybridLogicalClock);
             } else {
-                data.put(key, new Value(logicalTimestamp, value));
+                data.put(key, new Value(hybridLogicalClock, value));
             }
         }
     }
 
-    private void deleteCommit(BigInteger logicalTimestamp, String key) {
+    private void deleteCommit(HybridLogicalClock hybridLogicalClock, String key) {
         synchronized (lock) {
-            temporaryLog.addDeleteLog(logicalTimestamp, key);
-            writeAheadLog.addDeleteLog(logicalTimestamp, key);
+            temporaryLog.addDeleteLog(hybridLogicalClock, key);
+            writeAheadLog.addDeleteLog(hybridLogicalClock, key);
             data.remove(key);
         }
     }
 
-    private void deleteReplicaCommit(BigInteger logicalTimestamp, String key) {
+    private void deleteReplicaCommit(HybridLogicalClock hybridLogicalClock, String key) {
         synchronized (lock) {
-            writeAheadLog.addDeleteLog(logicalTimestamp, key);
+            writeAheadLog.addDeleteLog(hybridLogicalClock, key);
             data.remove(key);
         }
     }

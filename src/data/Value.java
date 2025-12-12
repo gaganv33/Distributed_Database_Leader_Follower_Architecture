@@ -3,24 +3,24 @@ package data;
 import java.math.BigInteger;
 
 public class Value {
-    private BigInteger logicalClock;
+    private HybridLogicalClock hybridLogicalClock;
     private String value;
 
-    public Value(BigInteger logicalClock, String value) {
-        this.logicalClock = logicalClock;
+    public Value(HybridLogicalClock hybridLogicalClock, String value) {
+        this.hybridLogicalClock = hybridLogicalClock;
         this.value = value;
     }
 
-    public BigInteger getLogicalClock() {
-        return logicalClock;
+    public HybridLogicalClock getHybridLogicalClock() {
+        return hybridLogicalClock;
     }
 
     public String getValue() {
         return value;
     }
 
-    public void setLogicalClock(BigInteger logicalClock) {
-        this.logicalClock = logicalClock;
+    public void setHybridLogicalClock(HybridLogicalClock hybridLogicalClock) {
+        this.hybridLogicalClock = hybridLogicalClock;
     }
 
     public void setValue(String value) {

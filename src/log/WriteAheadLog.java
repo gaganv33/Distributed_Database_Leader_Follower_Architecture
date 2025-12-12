@@ -1,5 +1,6 @@
 package log;
 
+import data.HybridLogicalClock;
 import data.OperationType;
 import data.operationDetails.DeleteOperationDetails;
 import data.operationDetails.OperationDetails;
@@ -10,32 +11,33 @@ import java.util.HashMap;
 import java.util.TreeMap;
 
 public class WriteAheadLog {
-    private final TreeMap<BigInteger, OperationDetails> log;
+    private final TreeMap<HybridLogicalClock, OperationDetails> log;
 
     public WriteAheadLog() {
-        log = new TreeMap<>();
+        log = new TreeMap<>((firstHybridLogicalClock, secondHybridLogicalClock) -> {
+            if (!firstHybridLogicalClock.getPhysicalClock().isEqual(secondHybridLogicalClock.getPhysicalClock())) {
+                return firstHybridLogicalClock.getPhysicalClock().compareTo(secondHybridLogicalClock.getPhysicalClock());
+            }
+            return firstHybridLogicalClock.getLogicalClock().compareTo(secondHybridLogicalClock.getLogicalClock());
+        });
     }
 
-    public void addUpdateLog(BigInteger logicalTimestamp, String key, String value) {
-        log.put(logicalTimestamp, new UpdateOperationDetails(OperationType.UPDATE, key, value));
+    public void addUpdateLog(HybridLogicalClock hybridLogicalClock, String key, String value) {
+        log.put(hybridLogicalClock, new UpdateOperationDetails(OperationType.UPDATE, key, value));
     }
 
-    public void addDeleteLog(BigInteger logicalTimestamp, String key) {
-        log.put(logicalTimestamp, new DeleteOperationDetails(OperationType.DELETE, key));
+    public void addDeleteLog(HybridLogicalClock hybridLogicalClock, String key) {
+        log.put(hybridLogicalClock, new DeleteOperationDetails(OperationType.DELETE, key));
     }
 
-    public BigInteger maximumLogicalTimeStamp() {
+    public HybridLogicalClock getMaximumHybridLogicalClock() {
         if (log.isEmpty()) {
-            return new BigInteger(String.valueOf(-1));
+            return null;
         }
         return log.lastKey();
     }
 
-    public BigInteger getMaximumLogicalTimestamp() {
-        return log.lastKey();
-    }
-
-    public HashMap<BigInteger, OperationDetails> getLogsAfterTheGivenTimestamp(BigInteger maximumLogicalTimestamp) {
-        return new HashMap<>(log.tailMap(maximumLogicalTimestamp));
+    public HashMap<HybridLogicalClock, OperationDetails> getLogsAfterTheGivenTimestamp(HybridLogicalClock hybridLogicalClock) {
+        return new HashMap<>(log.tailMap(hybridLogicalClock));
     }
 }
