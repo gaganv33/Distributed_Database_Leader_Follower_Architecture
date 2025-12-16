@@ -1,6 +1,7 @@
 package node.impl;
 
 import config.DatabaseNodeConfig;
+import config.LogsConfig;
 import data.DatabaseNodeType;
 import data.HybridLogicalClock;
 import data.OperationType;
@@ -56,7 +57,12 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
                 }
                 HashMap<HybridLogicalClock, OperationDetails> temporaryLogData = new HashMap<>(temporaryLog.getTemporaryLog());
                 temporaryLog.clearTemporaryLog();
-                this.rootNode.replicationOfDataWithFollowerDatabaseNodes(temporaryLogData);
+                try {
+                    this.rootNode.replicationOfData(temporaryLogData);
+                } catch (DatabaseNodeInActiveException e) {
+                    System.out.printf("[%s]: Exception while doing periodic replication of data: %s\n",
+                            this.databaseNodeName, e.getMessage());
+                }
             }
         });
 
@@ -75,24 +81,32 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
         });
 
         replicationOFDataUsingNeighbourDatabaseNodes = new Thread(() -> {
-            System.out.printf("[%s]: Starting a thread for periodically requesting the root node for replication of data " +
-                    "using the neighbour database nodes\n", this.databaseNodeName);
+            if (LogsConfig.isExtraLoggingEnabled) {
+                System.out.printf("[%s]: Starting a thread for periodically requesting the root node for replication of data " +
+                        "using the neighbour database nodes\n", this.databaseNodeName);
+            }
             while (true) {
                 try {
                     Thread.sleep(DatabaseNodeConfig.cooldownTimeForReplicationOfDataUsingNeighbourDatabaseNodes);
                 } catch (InterruptedException e) {
-                    System.out.printf("[%s]: Replication of data using the neighbour database nodes is stopped\n",
-                            this.databaseNodeName);
+                    if (LogsConfig.isExtraLoggingEnabled) {
+                        System.out.printf("[%s]: Replication of data using the neighbour database nodes is stopped\n",
+                                this.databaseNodeName);
+                    }
                     Thread.currentThread().interrupt();
                     return;
                 }
                 try {
-                    System.out.printf("[%s]: Starting replication of data using the neighbour database nodes\n",
-                            this.databaseNodeName);
+                    if (LogsConfig.isExtraLoggingEnabled) {
+                        System.out.printf("[%s]: Starting replication of data using the neighbour database nodes\n",
+                                this.databaseNodeName);
+                    }
                     rootNode.replicationOfDataBetweenDatabaseNodes(this);
                 } catch (Exception e) {
-                    System.out.printf("[%s]: Exception thrown in replicaOFDataUsingNeighbourDatabaseNodes thread\n",
-                            this.databaseNodeName);
+                    if (LogsConfig.isExtraLoggingEnabled) {
+                        System.out.printf("[%s]: Exception thrown in replicaOFDataUsingNeighbourDatabaseNodes thread\n",
+                                this.databaseNodeName);
+                    }
                 }
             }
         });
@@ -125,11 +139,15 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
                 HybridLogicalClock newHybridLogicalClock = getHybridLogicalClock(
                         hybridLogicalClock, currentHybridLogicalClock);
                 if (newHybridLogicalClock == null) {
-                    System.out.printf("[%s]: The write request timestamp is older than the records timestamp, so " +
-                            "not performing the update request\n", this.databaseNodeName);
+                    if (LogsConfig.isExtraLoggingEnabled) {
+                        System.out.printf("[%s]: The write request timestamp is older than the records timestamp, so " +
+                                "not performing the update request\n", this.databaseNodeName);
+                    }
                     return;
                 }
-                System.out.printf("[%s]: Executing the write request\n", this.databaseNodeName);
+                if (LogsConfig.isExtraLoggingEnabled) {
+                    System.out.printf("[%s]: Executing the write request\n", this.databaseNodeName);
+                }
                 updateCommit(newHybridLogicalClock, key, value);
             } else {
                 hybridLogicalClock.incrementLogicalClockByOne();
@@ -154,11 +172,15 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
                 HybridLogicalClock newHybridLogicalClock = getHybridLogicalClock(hybridLogicalClock, currentHybridLogicalClock);
 
                 if (newHybridLogicalClock == null) {
-                    System.out.printf("[%s]: The delete request timestamp is older than the records timestamp, so " +
-                            "not performing the delete request\n", this.databaseNodeName);
+                    if (LogsConfig.isExtraLoggingEnabled) {
+                        System.out.printf("[%s]: The delete request timestamp is older than the records timestamp, so " +
+                                "not performing the delete request\n", this.databaseNodeName);
+                    }
                     return;
                 }
-                System.out.printf("[%s]: Executing the delete request\n", this.databaseNodeName);
+                if (LogsConfig.isExtraLoggingEnabled) {
+                    System.out.printf("[%s]: Executing the delete request\n", this.databaseNodeName);
+                }
                 deleteCommit(newHybridLogicalClock, key);
             }
         }
@@ -204,7 +226,9 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
 
     @Override
     public void replicateData(HashMap<HybridLogicalClock, OperationDetails> log) throws DatabaseNodeInActiveException {
-        System.out.printf("[%s]: Starting the replication of data\n", this.databaseNodeName);
+        if (LogsConfig.isExtraLoggingEnabled) {
+            System.out.printf("[%s]: Starting the replication of data\n", this.databaseNodeName);
+        }
         for (var entry : log.entrySet()) {
              HybridLogicalClock hybridLogicalClock = entry.getKey();
             OperationDetails operationDetails = entry.getValue();
@@ -241,6 +265,58 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
     public HashMap<HybridLogicalClock, OperationDetails> getLogsAfterTheGivenTimestamp(HybridLogicalClock hybridLogicalClock) {
         synchronized (lock) {
             return writeAheadLog.getLogsAfterTheGivenTimestamp(hybridLogicalClock);
+        }
+    }
+
+    @Override
+    public HashMap<HybridLogicalClock, OperationDetails> getLogsInRangeOfConsistentHashingPosition(
+            int startingPositionInConsistentHashingRing, int endPositionInConsistentHashingRing
+    ) throws DatabaseNodeInActiveException, NotLeaderException {
+        synchronized (lock) {
+            if (!isActive) {
+                throw new DatabaseNodeInActiveException(String.format("[%s]: The database node is inactive.", this.databaseNodeName));
+            }
+            if (databaseNodeType != DatabaseNodeType.LEADER) {
+                throw new NotLeaderException(String.format("[%s]: The database node is not a leader node.", this.databaseNodeName));
+            }
+            return writeAheadLog.getLogsInRangeOfConsistentHashingPosition(
+                    startingPositionInConsistentHashingRing,
+                    endPositionInConsistentHashingRing
+            );
+        }
+    }
+
+    @Override
+    public HashMap<HybridLogicalClock, OperationDetails> getLogsInRangeOfConsistentHashingPosition(
+            int startingPositionInConsistentHashingRing, int intermediateEndingPositionInConsistentHashingRing,
+            int intermediateStartingPositonInConsistentHashingRing, int endingPositionInConsistentHashingRing
+    ) throws DatabaseNodeInActiveException, NotLeaderException {
+        synchronized (lock) {
+            if (!isActive) {
+                throw new DatabaseNodeInActiveException(String.format("[%s]: The database node is inactive.", this.databaseNodeName));
+            }
+            if (databaseNodeType != DatabaseNodeType.LEADER) {
+                throw new NotLeaderException(String.format("[%s]: The database node is not a leader node.", this.databaseNodeName));
+            }
+            return writeAheadLog.getLogsInRangeOfConsistentHashingPosition(
+                    startingPositionInConsistentHashingRing,
+                    intermediateEndingPositionInConsistentHashingRing,
+                    intermediateStartingPositonInConsistentHashingRing,
+                    endingPositionInConsistentHashingRing
+            );
+        }
+    }
+
+    @Override
+    public HashMap<HybridLogicalClock, OperationDetails> getLogs() throws DatabaseNodeInActiveException, NotLeaderException {
+        synchronized (lock) {
+            if (!isActive) {
+                throw new DatabaseNodeInActiveException(String.format("[%s]: The database node is inactive.", this.databaseNodeName));
+            }
+            if (databaseNodeType != DatabaseNodeType.LEADER) {
+                throw new NotLeaderException(String.format("[%s]: The database node is not a leader node.", this.databaseNodeName));
+            }
+            return writeAheadLog.getLogs();
         }
     }
 
@@ -297,11 +373,15 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
                 HybridLogicalClock newHybridLogicalClock = getHybridLogicalClock(hybridLogicalClock, currentHybridLogicalClock);
 
                 if (newHybridLogicalClock == null) {
-                    System.out.printf("[%s]: The replica write request timestamp is older than the records timestamp, so " +
-                            "not performing the replica write request\n", this.databaseNodeName);
+                    if (LogsConfig.isExtraLoggingEnabled) {
+                        System.out.printf("[%s]: The replica write request timestamp is older than the records timestamp, so " +
+                                "not performing the replica write request\n", this.databaseNodeName);
+                    }
                     return;
                 }
-                System.out.printf("[%s]: Executing the replica write request\n", this.databaseNodeName);
+                if (LogsConfig.isExtraLoggingEnabled) {
+                    System.out.printf("[%s]: Executing the replica write request\n", this.databaseNodeName);
+                }
                 updateReplicaCommit(newHybridLogicalClock, key, value);
             } else {
                 hybridLogicalClock.incrementLogicalClockByOne();
@@ -321,11 +401,15 @@ public class DatabaseNode implements ElevatedDatabaseNodeAccess {
 
                 HybridLogicalClock newHybridLogicalClock = getHybridLogicalClock(hybridLogicalClock, currentHybridLogicalClock);
                 if (newHybridLogicalClock == null) {
-                    System.out.printf("[%s]: The replica delete request timestamp is older than the records timestamp, so " +
-                            "not performing the replica delete request\n", this.databaseNodeName);
+                    if (LogsConfig.isExtraLoggingEnabled) {
+                        System.out.printf("[%s]: The replica delete request timestamp is older than the records timestamp, so " +
+                                "not performing the replica delete request\n", this.databaseNodeName);
+                    }
                     return;
                 }
-                System.out.printf("[%s]: Executing the replica delete request\n", this.databaseNodeName);
+                if (LogsConfig.isExtraLoggingEnabled) {
+                    System.out.printf("[%s]: Executing the replica delete request\n", this.databaseNodeName);
+                }
                 deleteReplicaCommit(newHybridLogicalClock, key);
             }
         }

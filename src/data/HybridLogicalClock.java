@@ -7,6 +7,11 @@ public class HybridLogicalClock {
     private final LocalDateTime physicalClock;
     private BigInteger logicalClock;
 
+    public HybridLogicalClock(LocalDateTime physicalClock) {
+        this.physicalClock = physicalClock;
+        logicalClock = new BigInteger(String.valueOf(0));
+    }
+
     public HybridLogicalClock(LocalDateTime physicalClock, BigInteger logicalClock) {
         this.physicalClock = physicalClock;
         this.logicalClock = logicalClock;

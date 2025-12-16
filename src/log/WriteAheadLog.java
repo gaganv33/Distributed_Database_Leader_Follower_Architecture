@@ -5,8 +5,8 @@ import data.OperationType;
 import data.operationDetails.DeleteOperationDetails;
 import data.operationDetails.OperationDetails;
 import data.operationDetails.UpdateOperationDetails;
+import util.HashingHelper;
 
-import java.math.BigInteger;
 import java.util.HashMap;
 import java.util.TreeMap;
 
@@ -39,5 +39,52 @@ public class WriteAheadLog {
 
     public HashMap<HybridLogicalClock, OperationDetails> getLogsAfterTheGivenTimestamp(HybridLogicalClock hybridLogicalClock) {
         return new HashMap<>(log.tailMap(hybridLogicalClock));
+    }
+
+    public HashMap<HybridLogicalClock, OperationDetails> getLogsInRangeOfConsistentHashingPosition(
+            int startingPositionInConsistentHashingRing, int endingPositionInConsistentHashingRing
+    ) {
+        HashMap<HybridLogicalClock, OperationDetails> logsInRange = new HashMap<>();
+        for (var entry : log.entrySet()) {
+            HybridLogicalClock hybridLogicalClock = entry.getKey();
+            OperationDetails operationDetails = entry.getValue();
+            String key = operationDetails.getKey();
+            int positionInConsistentHashingRing = HashingHelper.hash(key);
+            if (checkIfInRange(positionInConsistentHashingRing, startingPositionInConsistentHashingRing,
+                    endingPositionInConsistentHashingRing)) {
+                logsInRange.put(hybridLogicalClock, operationDetails);
+            }
+        }
+        return logsInRange;
+    }
+
+    public HashMap<HybridLogicalClock, OperationDetails> getLogsInRangeOfConsistentHashingPosition(
+            int startingPositonInConsistentHashingRing, int intermediateEndingPositonInConsistentHashingRing,
+            int intermediateStartingPositionInConsistentHashingRing, int endingPositionInConsistentHashing
+    ) {
+        HashMap<HybridLogicalClock, OperationDetails> logsInRange = new HashMap<>();
+        for (var entry : log.entrySet()) {
+            HybridLogicalClock hybridLogicalClock = entry.getKey();
+            OperationDetails operationDetails = entry.getValue();
+            String key = operationDetails.getKey();
+            int positionInConsistentHashingRing = HashingHelper.hash(key);
+            if (checkIfInRange(positionInConsistentHashingRing, startingPositonInConsistentHashingRing,
+                    intermediateEndingPositonInConsistentHashingRing) ||
+            checkIfInRange(positionInConsistentHashingRing, intermediateStartingPositionInConsistentHashingRing,
+                    endingPositionInConsistentHashing)) {
+                logsInRange.put(hybridLogicalClock, operationDetails);
+            }
+        }
+        return logsInRange;
+    }
+
+    public HashMap<HybridLogicalClock, OperationDetails> getLogs() {
+        return new HashMap<>(log);
+    }
+
+    private boolean checkIfInRange(int positionInConsistentHashingRing, int startingPositionInConsistentHashingRing,
+                                   int endingPositionInConsistentHashingRing) {
+        return (positionInConsistentHashingRing >= startingPositionInConsistentHashingRing &&
+                positionInConsistentHashingRing <= endingPositionInConsistentHashingRing);
     }
 }

@@ -1,5 +1,7 @@
 package node.impl;
 
+import config.DatabaseNodeConfig;
+import config.LogsConfig;
 import config.RootNodeConfig;
 import data.DatabaseNodeType;
 import data.HybridLogicalClock;
@@ -10,6 +12,7 @@ import node.databaseNode.FollowerDatabaseNodeAccess;
 import node.databaseNode.LeaderDatabaseNodeAccess;
 import node.rootNode.BasicRootNodeAccess;
 import node.rootNode.ElevatedRootNodeAccess;
+import server.ElevatedProxyServer;
 import service.AsyncReplicationService;
 import util.HybridLogicalClockComparator;
 import util.RandomHelper;
@@ -32,8 +35,10 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
     private final Object lock = new Object();
     private final AtomicInteger index = new AtomicInteger(0);
     private final AsyncReplicationService asyncReplicationService;
+    private Thread updateHeartBeatProxyServer;
+    private final ElevatedProxyServer proxyServer;
 
-    public RootNode(int rootNodeId, int numberOfDatabaseNodes) {
+    public RootNode(int rootNodeId, int numberOfDatabaseNodes, ElevatedProxyServer proxyServer) {
         this.rootNodeId = rootNodeId;
         this.rootNodeName = String.format("Root Node-%d", rootNodeId);
         this.databaseNodesHeartBeat = new HashMap<>();
@@ -41,6 +46,7 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
         this.maximumHybridLogicalTimestampOfDatabaseNodes = new HashMap<>();
         this.followerDatabaseNodes = new ArrayList<>();
         this.isActive = true;
+        this.proxyServer = proxyServer;
         this.asyncReplicationService = new AsyncReplicationService();
         Thread asyncReplicationServiceThread = new Thread(this.asyncReplicationService);
         asyncReplicationServiceThread.start();
@@ -58,14 +64,25 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
                     return;
                 }
 
-                System.out.printf("[%s]: Checking if any database is inactive, using the last heart beat\n", this.rootNodeName);
+                if (LogsConfig.isLeaderRootNodeCleaningInactiveDatabaseNodesLoggingEnabled) {
+                    System.out.printf("[%s]: Leader Node data size: %d\n", rootNodeName, leaderDatabaseNode.getDataSize());
+                }
+
+                if (LogsConfig.isCleaningInactiveDatabaseNodesLoggingEnabled) {
+                    System.out.printf("[%s]: Checking if any database is inactive, using the last heart beat\n", this.rootNodeName);
+                }
                 // Checking heart beat for all the follower database nodes
                 List<FollowerDatabaseNodeAccess> followerDatabaseNodesToRemove = new ArrayList<>();
-                for (var databaseNode : followerDatabaseNodes) {
+                // Creating a consistent view of the follower database nodes
+                List<FollowerDatabaseNodeAccess> followerDatabaseNodesCopy = new ArrayList<>(followerDatabaseNodes);
+
+                for (var databaseNode : followerDatabaseNodesCopy) {
                     long timeDifference = Duration.between(databaseNodesHeartBeat.get((ElevatedDatabaseNodeAccess) databaseNode),
                             LocalDateTime.now()).getSeconds();
-                    System.out.printf("[%s]: %s %d %d ; %d\n", this.rootNodeName, databaseNode.getDatabaseNodeName(),
-                            timeDifference, RootNodeConfig.heartBeatTimeoutSeconds, databaseNode.getDataSize());
+                    if (LogsConfig.isCleaningInactiveDatabaseNodesLoggingEnabled) {
+                        System.out.printf("[%s]: %s %d %d ; %d\n", this.rootNodeName, databaseNode.getDatabaseNodeName(),
+                                timeDifference, RootNodeConfig.heartBeatTimeoutSeconds, databaseNode.getDataSize());
+                    }
                     if (timeDifference > RootNodeConfig.heartBeatTimeoutSeconds) {
                         followerDatabaseNodesToRemove.add(databaseNode);
                         databaseNodesStatus.put((ElevatedDatabaseNodeAccess) databaseNode, false);
@@ -76,20 +93,44 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
                 // Checking heart beat for the leader database node
                 long timeDifference = Duration.between(databaseNodesHeartBeat.get((ElevatedDatabaseNodeAccess) leaderDatabaseNode),
                         LocalDateTime.now()).getSeconds();
-                System.out.printf("[%s]: %s %d %d\n", this.rootNodeName, leaderDatabaseNode.getDatabaseNodeName(),
-                        timeDifference, RootNodeConfig.heartBeatTimeoutSeconds);
+                if (LogsConfig.isCleaningInactiveDatabaseNodesLoggingEnabled) {
+                    System.out.printf("[%s]: %s %d %d\n", this.rootNodeName, leaderDatabaseNode.getDatabaseNodeName(),
+                            timeDifference, RootNodeConfig.heartBeatTimeoutSeconds);
+                }
                 if (timeDifference > RootNodeConfig.heartBeatTimeoutSeconds) {
                     databaseNodesStatus.put((ElevatedDatabaseNodeAccess) leaderDatabaseNode, false);
                     leaderElection();
                 }
+
+                if (checkIfAllTheFollowerDatabaseNodesAreDown()) {
+                    allDatabaseNodesAreDown();
+                }
             }
         });
+
+        this.updateHeartBeatProxyServer = new Thread(() -> {
+            System.out.printf("[%s]: Starting a thread to update the heart beat in proxy server\n", this.rootNodeName);
+            while (true) {
+                try {
+                    Thread.sleep(DatabaseNodeConfig.cooldownTimeForUpdatingHeartBeat);
+                } catch (InterruptedException e) {
+                    System.out.printf("[%s]: Updating the heart beat thread is stopped\n", this.rootNodeName);
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                this.proxyServer.updateHeartBeat(this);
+            }
+        });
+
         this.cleaningInactiveDatabaseNodes.start();
+        this.updateHeartBeatProxyServer.start();
     }
 
     @Override
     public String get(String key) throws DatabaseNodeInActiveException, DataNotFoundException, RootNodeDownException {
-        System.out.printf("[%s]: Get request for key: %s\n", this.rootNodeName, key);
+        if (LogsConfig.isExtraLoggingEnabled) {
+            System.out.printf("[%s]: Get request for key: %s\n", this.rootNodeName, key);
+        }
         List<FollowerDatabaseNodeAccess> followerDatabaseNodeCopy = new ArrayList<>(followerDatabaseNodes);
 
         if (followerDatabaseNodeCopy.isEmpty()) {
@@ -105,15 +146,19 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
             try {
                 return followerDatabaseNode.get(key);
             } catch (DatabaseNodeInActiveException e) {
-                System.out.printf("[%s]: The follower database node is down, retrying with other follower database node\n",
-                        this.rootNodeName);
+                if (LogsConfig.isExtraLoggingEnabled) {
+                    System.out.printf("[%s]: The follower database node is down, retrying with other follower database node\n",
+                            this.rootNodeName);
+                }
                 removeDatabaseNode(followerDatabaseNode);
             } catch (DataNotFoundException e) {
                 throw new DataNotFoundException(String.format("[%s]: Data not found in the database for the given key: %s",
                         this.rootNodeName, key));
             }
         }
-        System.out.printf("[%s]: Did not get the data after a number of retries\n", this.rootNodeName);
+        if (LogsConfig.isExtraLoggingEnabled) {
+            System.out.printf("[%s]: Did not get the data after a number of retries\n", this.rootNodeName);
+        }
         throw new DatabaseNodeInActiveException(String.format("[%s]: The follower database nodes are down, " +
                 "try again after some time", this.rootNodeName));
     }
@@ -121,7 +166,9 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
     @Override
     public void write(HybridLogicalClock hybridLogicalClock, String key, String value) throws
             DatabaseNodeInActiveException, NotLeaderException, RootNodeDownException {
-        System.out.printf("[%s]: Write request for key: %s, value : %s\n", this.rootNodeName, key, value);
+        if (LogsConfig.isExtraLoggingEnabled) {
+            System.out.printf("[%s]: Write request for key: %s, value : %s\n", this.rootNodeName, key, value);
+        }
         try {
             leaderDatabaseNode.write(hybridLogicalClock, key, value);
         } catch (DatabaseNodeInActiveException e) {
@@ -129,7 +176,7 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
             leaderElection();
             throw new DatabaseNodeInActiveException(String.format("[%s]: The leader node is inactive. Try again after some time.", this.rootNodeName));
         } catch (NotLeaderException e) {
-            throw new NotLeaderException(String.format("[%s]: There is some error while writing to the leader node, " +
+            throw new NotLeaderException(String.format("[%s]: There is some error while writing data to the leader node, " +
                     "try again after some time.", this.rootNodeName));
         } catch (NullPointerException e) {
             throw new RootNodeDownException(String.format("[%s]: Root Node down exception", this.rootNodeName));
@@ -139,7 +186,9 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
     @Override
     public void delete(HybridLogicalClock hybridLogicalClock, String key) throws DatabaseNodeInActiveException,
             NotLeaderException, RootNodeDownException {
-        System.out.printf("[%s]: Delete request for key: %s\n", this.rootNodeName, key);
+        if (LogsConfig.isExtraLoggingEnabled) {
+            System.out.printf("[%s]: Delete request for key: %s\n", this.rootNodeName, key);
+        }
         try {
             leaderDatabaseNode.delete(hybridLogicalClock, key);
         } catch (DatabaseNodeInActiveException e) {
@@ -147,7 +196,7 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
             leaderElection();
             throw new DatabaseNodeInActiveException(String.format("[%s]: The leader node is inactive. Try again after some time.", this.rootNodeName));
         } catch (NotLeaderException e) {
-            throw new NotLeaderException(String.format("[%s]: There is some error while writing to the leader node, " +
+            throw new NotLeaderException(String.format("[%s]: There is some error while deleting data from the leader node, " +
                     "try again after some time.", this.rootNodeName));
         } catch (NullPointerException e) {
             throw new RootNodeDownException(String.format("[%s]: Root Node down exception", this.rootNodeName));
@@ -156,9 +205,16 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
 
     @Override
     public void updateHeartBeat(ElevatedDatabaseNodeAccess databaseNode) {
-        System.out.printf("[%s]: Updating heart beat for the database node: %s\n", this.rootNodeName, databaseNode.getDatabaseNodeName());
+        if (LogsConfig.isUpdatedHeartBeatLoggingEnabled) {
+            System.out.printf("[%s]: Updating heart beat for the database node: %s\n", this.rootNodeName,
+                    databaseNode.getDatabaseNodeName());
+        }
         databaseNodesHeartBeat.put(databaseNode, LocalDateTime.now());
         if (!databaseNodesStatus.get(databaseNode)) {
+            if (LogsConfig.inactiveToActiveLoggingEnabled) {
+                System.out.printf("[%s]: Database node: %s changing from inactive to active\n", this.rootNodeName,
+                        databaseNode.getDatabaseNodeName());
+            }
             databaseNodesStatus.put(databaseNode, true);
             followerDatabaseNodes.add(databaseNode);
             if (!isActive) {
@@ -168,13 +224,18 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
     }
 
     @Override
-    public void replicationOfDataWithFollowerDatabaseNodes(HashMap<HybridLogicalClock, OperationDetails> temporaryLogData) {
-        System.out.printf("[%s]: Replicating data across all the database nodes\n", this.rootNodeName);
+    public void replicationOfData(HashMap<HybridLogicalClock, OperationDetails> temporaryLogData) {
+        if (LogsConfig.isExtraLoggingEnabled) {
+            System.out.printf("[%s]: Replicating data across all the database nodes\n", this.rootNodeName);
+        }
         for (var followerDatabaseNode : followerDatabaseNodes) {
             try {
                 ((ElevatedDatabaseNodeAccess) followerDatabaseNode).replicateData(temporaryLogData);
             } catch (DatabaseNodeInActiveException e) {
-                System.out.printf("[%s]: Exception while performing replication -> %s", this.rootNodeName, e.getMessage());
+                if (LogsConfig.isExtraLoggingEnabled) {
+                    System.out.printf("[%s]: Exception while performing replication -> %s", this.rootNodeName, e.getMessage());
+                }
+                throw new DatabaseNodeInActiveException(e.getMessage());
             }
         }
     }
@@ -186,8 +247,10 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
                 throw new RootNodeDownException(String.format("[%s]: The root node is down, since all database nodes are down\n",
                         this.rootNodeName));
             }
-            System.out.printf("[%s]: %s -> Starting a asynchronous replication of data using the neighbour database nodes\n",
-                    this.rootNodeName, databaseNode.getDatabaseNodeName());
+            if (LogsConfig.isExtraLoggingEnabled) {
+                System.out.printf("[%s]: %s -> Starting a asynchronous replication of data using the neighbour database nodes\n",
+                        this.rootNodeName, databaseNode.getDatabaseNodeName());
+            }
 
             // Getting the maximum hybrid  logical timestamp
             HybridLogicalClock maximumHybridLogicalClockBeforeLeaderElection =
@@ -201,6 +264,13 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
                 maximumHybridLogicalClock = Collections.min(
                         Arrays.asList(maximumHybridLogicalClockBeforeLeaderElection, currentMaximumHybridLogicalClock),
                         HybridLogicalClockComparator.getHybridLogicalClock());
+            }
+
+            if (maximumHybridLogicalClock == null) {
+                if (LogsConfig.isExtraLoggingEnabled) {
+                    System.out.printf("[%s]: There is no data to replicate\n", this.rootNodeName);
+                }
+                return;
             }
 
             // Creating a copy of the follower database nodes, so that we work on a consistent view of the follower
@@ -218,7 +288,9 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
                 if (!replicaDatabaseNode.getIsActive()) {
                     // removing the database node, if it is inactive
                     removeDatabaseNode(replicaDatabaseNode);
-                    System.out.printf("[%s]: Replica database node is down, retry with another database node\n", this.rootNodeName);
+                    if (LogsConfig.isExtraLoggingEnabled) {
+                        System.out.printf("[%s]: Replica database node is down, retry with another database node\n", this.rootNodeName);
+                    }
                     totalFailedAttempts++;
                 } else {
                     if (!replicaDatabaseNode.getDatabaseNodeName().equals(databaseNode.getDatabaseNodeName())) {
@@ -226,13 +298,17 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
                                 ((ElevatedDatabaseNodeAccess) replicaDatabaseNode).getLogsAfterTheGivenTimestamp(maximumHybridLogicalClock);
                         try {
                             databaseNode.replicateData(logsAfterTheGivenTimestamp);
-                            System.out.printf("[%s]: %s -> Completed replicating data from the neighbour database node: %s\n",
-                                    this.rootNodeName, databaseNode.getDatabaseNodeName(), replicaDatabaseNode.getDatabaseNodeName());
+                            if (LogsConfig.isExtraLoggingEnabled) {
+                                System.out.printf("[%s]: %s -> Completed replicating data from the neighbour database node: %s\n",
+                                        this.rootNodeName, databaseNode.getDatabaseNodeName(), replicaDatabaseNode.getDatabaseNodeName());
+                            }
                             counter++;
                         } catch (DatabaseNodeInActiveException e) {
                             totalFailedAttempts++;
-                            System.out.printf("[%s]: Exception replication of data between database nodes -> %s\n",
-                                    this.rootNodeName, e.getMessage());
+                            if (LogsConfig.isExtraLoggingEnabled) {
+                                System.out.printf("[%s]: Exception replication of data between database nodes -> %s\n",
+                                        this.rootNodeName, e.getMessage());
+                            }
                         }
                     }
                 }
@@ -251,6 +327,85 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
         asyncReplicationService.addTask(runnable);
     }
 
+    @Override
+    public String getRootNodeName() {
+        return this.rootNodeName;
+    }
+
+    @Override
+    public HashMap<HybridLogicalClock, OperationDetails> getLogsInRangeOfConsistentHashingPosition(
+            int startingPositionInConsistentHashingRing, int endingPositionInConsistentHashingRing
+    ) throws DatabaseNodeInActiveException, NotLeaderException, RootNodeDownException {
+        if (LogsConfig.isExtraLoggingEnabled) {
+            System.out.printf("[%s]: Getting the logs from the write ahead log for all the keys which are in the given " +
+                    "range\n", this.rootNodeName);
+        }
+        try {
+            return leaderDatabaseNode.getLogsInRangeOfConsistentHashingPosition(startingPositionInConsistentHashingRing,
+                    endingPositionInConsistentHashingRing);
+        } catch (DatabaseNodeInActiveException e) {
+            // start leader election
+            leaderElection();
+            throw new DatabaseNodeInActiveException(String.format("[%s]: The leader node is inactive. Try again after some time.",
+                    this.rootNodeName));
+        } catch (NotLeaderException e) {
+            throw new NotLeaderException(String.format("[%s]: There is some error while getting log from the root node",
+                    this.rootNodeName));
+        } catch (NullPointerException e) {
+            throw new RootNodeDownException(String.format("[%s]: Root Node down exception", this.rootNodeName));
+        }
+    }
+
+    @Override
+    public HashMap<HybridLogicalClock, OperationDetails> getLogsInRangeOfConsistentHashingPosition(
+            int startingPositionInConsistentHashingRing, int intermediateEndingPositionInConsistentHashingRing,
+            int intermediateStartingPositionInConsistentHashingRing, int endingPositionInConsistentHashingRing
+    ) throws DatabaseNodeInActiveException, NotLeaderException, RootNodeDownException {
+        if (LogsConfig.isExtraLoggingEnabled) {
+            System.out.printf("[%s]: Getting the logs from the write ahead log for all the keys which are in the given " +
+                    "range\n", this.rootNodeName);
+        }
+        try {
+            return leaderDatabaseNode.getLogsInRangeOfConsistentHashingPosition(
+                    startingPositionInConsistentHashingRing,
+                    intermediateEndingPositionInConsistentHashingRing,
+                    intermediateStartingPositionInConsistentHashingRing,
+                    endingPositionInConsistentHashingRing
+            );
+        } catch (DatabaseNodeInActiveException e) {
+            // start leader election
+            leaderElection();
+            throw new DatabaseNodeInActiveException(String.format("[%s]: The leader node is inactive. Try again after some time.",
+                    this.rootNodeName));
+        } catch (NotLeaderException e) {
+            throw new NotLeaderException(String.format("[%s]: There is some error while getting log from the root node",
+                    this.rootNodeName));
+        } catch (NullPointerException e) {
+            throw new RootNodeDownException(String.format("[%s]: Root Node down exception", this.rootNodeName));
+        }
+    }
+
+    @Override
+    public HashMap<HybridLogicalClock, OperationDetails> getLogs() throws DatabaseNodeInActiveException, NotLeaderException,
+            RootNodeDownException {
+        if (LogsConfig.isExtraLoggingEnabled) {
+            System.out.printf("[%s]: Getting all the logs\n", this.rootNodeName);
+        }
+        try {
+            return leaderDatabaseNode.getLogs();
+        } catch (DatabaseNodeInActiveException e) {
+            // start leader election
+            leaderElection();
+            throw new DatabaseNodeInActiveException(String.format("[%s]: The leader node is inactive. Try again after some time.",
+                    this.rootNodeName));
+        } catch (NotLeaderException e) {
+            throw new NotLeaderException(String.format("[%s]: There is some error while getting log from the root node",
+                    this.rootNodeName));
+        } catch (NullPointerException e) {
+            throw new RootNodeDownException(String.format("[%s]: Root Node down exception", this.rootNodeName));
+        }
+    }
+
     private void clearMaximumHybridLogicalTimestamp(ElevatedDatabaseNodeAccess databaseNode) {
         maximumHybridLogicalTimestampOfDatabaseNodes.put(databaseNode, null);
     }
@@ -264,6 +419,8 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
             isActive = true;
             cleaningInactiveDatabaseNodes = new Thread(cleaningInactiveDatabaseNodes);
             cleaningInactiveDatabaseNodes.start();
+            updateHeartBeatProxyServer = new Thread(updateHeartBeatProxyServer);
+            updateHeartBeatProxyServer.start();
             leaderElection();
         }
     }
@@ -278,23 +435,31 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
                 return;
             }
             List<FollowerDatabaseNodeAccess> followerDatabaseNodesCopy = new ArrayList<>(followerDatabaseNodes);
-            System.out.printf("[%s]: Starting leader election process\n", this.rootNodeName);
+            if (LogsConfig.isExtraLoggingEnabled) {
+                System.out.printf("[%s]: Starting leader election process\n", this.rootNodeName);
+            }
             for (int i = 0; i < RootNodeConfig.retryCountForLeaderElection; i++) {
                 int index = RandomHelper.getRandomIntegerInRange(0, followerDatabaseNodesCopy.size());
                 ElevatedDatabaseNodeAccess newLeaderDatabaseNode = (ElevatedDatabaseNodeAccess) followerDatabaseNodesCopy.get(index);
                 if (!newLeaderDatabaseNode.getIsActive()) {
-                    System.out.printf("[%s]: %s database node is down, so cannot elect this database node as the next" +
-                            "leader node. Retry for leader election.\n",
-                            this.rootNodeName, newLeaderDatabaseNode.getDatabaseNodeName());
+                    if (LogsConfig.isExtraLoggingEnabled) {
+                        System.out.printf("[%s]: %s database node is down, so cannot elect this database node as the next" +
+                                        "leader node. Retry for leader election.\n",
+                                this.rootNodeName, newLeaderDatabaseNode.getDatabaseNodeName());
+                    }
                     removeDatabaseNode(newLeaderDatabaseNode);
                     continue;
                 }
-                System.out.printf("[%s]: Notifying all the database node, to store the logical timestamp\n", this.rootNodeName);
+                if (LogsConfig.isExtraLoggingEnabled) {
+                    System.out.printf("[%s]: Notifying all the database node, to store the logical timestamp\n", this.rootNodeName);
+                }
                 // update the current logical timestamp, so that we can start the replication of data from this,
                 // logical timestamp. To prevent loss of data.
                 updateTheHybridLogicalTimestampBeforeNewLeaderElection();
-                System.out.printf("[%s]: Found a leader, database node name: %s\n", this.rootNodeName,
-                        newLeaderDatabaseNode.getDatabaseNodeName());
+                if (LogsConfig.isExtraLoggingEnabled) {
+                    System.out.printf("[%s]: Found a leader, database node name: %s\n", this.rootNodeName,
+                            newLeaderDatabaseNode.getDatabaseNodeName());
+                }
                 newLeaderDatabaseNode.elevateToLeaderDatabaseNode();
                 leaderDatabaseNode = newLeaderDatabaseNode;
                 return;
@@ -328,6 +493,7 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
             isActive = false;
             leaderDatabaseNode = null;
             cleaningInactiveDatabaseNodes.interrupt();
+            updateHeartBeatProxyServer.interrupt();
         }
     }
 
@@ -338,6 +504,10 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
     private void removeDatabaseNode(FollowerDatabaseNodeAccess databaseNode) {
         databaseNodesStatus.put((ElevatedDatabaseNodeAccess) databaseNode, false);
         followerDatabaseNodes.remove(databaseNode);
+
+        if (checkIfAllTheFollowerDatabaseNodesAreDown()) {
+            allDatabaseNodesAreDown();
+        }
     }
 
     private LeaderDatabaseNodeAccess getAndStartLeaderDatabaseNode() {

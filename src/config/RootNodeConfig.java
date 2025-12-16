@@ -6,4 +6,5 @@ public interface RootNodeConfig {
     int retryCountForLeaderElection = 3;
     int retryCountForFindDatabaseNodeForReplication = 3;
     int retryLimitForFindingDatabaseNodeForReplication = 3;
+    long cooldownTimeForUpdatingHeartBeat = 2000;
 }

@@ -1,12 +1,45 @@
 import data.HybridLogicalClock;
 import node.impl.RootNode;
 import node.rootNode.BasicRootNodeAccess;
+import server.RequestProxy;
+import server.impl.ProxyServer;
 import util.RandomHelper;
 
 import java.math.BigInteger;
 import java.time.LocalDateTime;
 
 public class Main {
+    public static void main(String[] args) throws InterruptedException {
+        RequestProxy requestProxy = new ProxyServer(6);
+
+        while (true) {
+            try {
+                write("Key-" + RandomHelper.getRandomIntegerInRange(1, 500), "Value-" + RandomHelper.getRandomIntegerInRange(1, 5), requestProxy);
+                write("Key-" + RandomHelper.getRandomIntegerInRange(1, 500), "Value-" + RandomHelper.getRandomIntegerInRange(1, 5), requestProxy);
+                write("Key-" + RandomHelper.getRandomIntegerInRange(1, 500), "Value-" + RandomHelper.getRandomIntegerInRange(1, 5), requestProxy);
+                Thread.sleep(2000);
+
+                System.out.println(get("Key-" + RandomHelper.getRandomIntegerInRange(1, 500), requestProxy));
+                System.out.println(get("Key-" + RandomHelper.getRandomIntegerInRange(1, 500), requestProxy));
+                System.out.println(get("Key-" + RandomHelper.getRandomIntegerInRange(1, 500), requestProxy));
+                Thread.sleep(2000);
+            } catch (Exception e) {
+                Thread.sleep(2000);
+                System.out.printf("Client side exception: %s\n", e.getMessage());
+            }
+        }
+    }
+
+    private static void write(String key, String value, RequestProxy requestProxy) {
+        requestProxy.write(LocalDateTime.now(), key, value);
+    }
+
+    private static String get(String key, RequestProxy requestProxy) {
+        return requestProxy.get(key);
+    }
+
+    // Implementation of the single shard, where there is one leader node and multiple replica nodes
+    /*
     public static void main(String[] args) throws InterruptedException {
         BasicRootNodeAccess rootNode = new RootNode(1, 3);
 
@@ -44,4 +77,5 @@ public class Main {
     private static void delete(String key, BasicRootNodeAccess rootNode) {
         rootNode.delete(new HybridLogicalClock(LocalDateTime.now(), new BigInteger(String.valueOf(0))), key);
     }
+    */
 }
