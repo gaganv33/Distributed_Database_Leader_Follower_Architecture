@@ -19,6 +19,11 @@ public class Main {
                 write("Key-" + RandomHelper.getRandomIntegerInRange(1, 500), "Value-" + RandomHelper.getRandomIntegerInRange(1, 5), requestProxy);
                 Thread.sleep(2000);
 
+                delete("Key-" + RandomHelper.getRandomIntegerInRange(1, 500), requestProxy);
+                delete("Key-" + RandomHelper.getRandomIntegerInRange(1, 500), requestProxy);
+                delete("Key-" + RandomHelper.getRandomIntegerInRange(1, 500), requestProxy);
+                Thread.sleep(2000);
+
                 System.out.println(get("Key-" + RandomHelper.getRandomIntegerInRange(1, 500), requestProxy));
                 System.out.println(get("Key-" + RandomHelper.getRandomIntegerInRange(1, 500), requestProxy));
                 System.out.println(get("Key-" + RandomHelper.getRandomIntegerInRange(1, 500), requestProxy));
@@ -36,6 +41,10 @@ public class Main {
 
     private static String get(String key, RequestProxy requestProxy) {
         return requestProxy.get(key);
+    }
+
+    private static void delete(String key, RequestProxy requestProxy) {
+        requestProxy.delete(LocalDateTime.now(), key);
     }
 
     // Implementation of the single shard, where there is one leader node and multiple replica nodes

@@ -128,7 +128,7 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
 
     @Override
     public String get(String key) throws DatabaseNodeInActiveException, DataNotFoundException, RootNodeDownException {
-        if (LogsConfig.isExtraLoggingEnabled) {
+        if (LogsConfig.isGetOperationRootNodeLoggingEnabled) {
             System.out.printf("[%s]: Get request for key: %s\n", this.rootNodeName, key);
         }
         List<FollowerDatabaseNodeAccess> followerDatabaseNodeCopy = new ArrayList<>(followerDatabaseNodes);
@@ -166,7 +166,7 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
     @Override
     public void write(HybridLogicalClock hybridLogicalClock, String key, String value) throws
             DatabaseNodeInActiveException, NotLeaderException, RootNodeDownException {
-        if (LogsConfig.isExtraLoggingEnabled) {
+        if (LogsConfig.isWriteOperationRootNodeLoggingEnabled) {
             System.out.printf("[%s]: Write request for key: %s, value : %s\n", this.rootNodeName, key, value);
         }
         try {
@@ -186,7 +186,7 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
     @Override
     public void delete(HybridLogicalClock hybridLogicalClock, String key) throws DatabaseNodeInActiveException,
             NotLeaderException, RootNodeDownException {
-        if (LogsConfig.isExtraLoggingEnabled) {
+        if (LogsConfig.isDeleteOperationRootNodeLoggingEnabled) {
             System.out.printf("[%s]: Delete request for key: %s\n", this.rootNodeName, key);
         }
         try {
