@@ -1,39 +1,36 @@
 package service;
 
-import java.util.LinkedList;
-import java.util.Queue;
+import exception.ReplicationRetryExceededException;
+import exception.RootNodeDownException;
+
+import java.util.concurrent.LinkedBlockingQueue;
 
 public class AsyncReplicationService implements Runnable {
-    private final Queue<Runnable> queue;
-    private final Object lock;
+    private final LinkedBlockingQueue<Runnable> queue;
 
     public AsyncReplicationService() {
-        this.queue = new LinkedList<>();
-        this.lock = new Object();
+        queue = new LinkedBlockingQueue<>();
     }
 
     @Override
     public void run() {
         while (true) {
-            Runnable runnable = null;
+            Runnable task;
             try {
-                synchronized (lock) {
-                    while (queue.isEmpty()) {
-                        lock.wait();
-                    }
-                    runnable = queue.poll();
-                }
-                if (runnable != null) runnable.run();
-            } catch (Exception e) {
-                System.out.println("The replication task was interrupted: " + e.getMessage());
+                task = queue.take();
+                task.run();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.out.println("[AsyncReplicationService]: The asynchronous replication of data within the shard is stopped");
+            } catch (ReplicationRetryExceededException e) {
+                System.out.println("[AsyncReplicationService]: Replicate data has exceeded the try limit for replication of data");
+            } catch (RootNodeDownException e) {
+                System.out.println("[AsyncReplicationService]: Root node is down");
             }
         }
     }
 
-    public void addTask(Runnable runnable) {
-        synchronized (lock) {
-            queue.offer(runnable);
-            lock.notifyAll();
-        }
+    public void addTask(Runnable task) {
+        queue.offer(task);
     }
 }

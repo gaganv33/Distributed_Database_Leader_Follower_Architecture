@@ -29,8 +29,8 @@ public class Main {
                 System.out.println(get("Key-" + RandomHelper.getRandomIntegerInRange(1, 500), requestProxy));
                 Thread.sleep(2000);
             } catch (Exception e) {
-                Thread.sleep(2000);
                 System.out.printf("Client side exception: %s\n", e.getMessage());
+                Thread.sleep(2000);
             }
         }
     }

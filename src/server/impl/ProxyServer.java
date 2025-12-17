@@ -26,6 +26,7 @@ public class ProxyServer implements RequestProxy, ElevatedProxyServer {
     private boolean isActive;
     private Thread cleaningInactiveRootNode;
     private final Object lock = new Object();
+    private final Object dataLock = new Object();
 
     public ProxyServer(int numberOfShards) {
         rootNodesHeartBeat = new HashMap<>();
@@ -62,8 +63,13 @@ public class ProxyServer implements RequestProxy, ElevatedProxyServer {
                 System.out.println("[Proxy Server]: Checking if any root node is inactive, using the last heart beat");
                 // Checking heart beat for all the root nodes
                 List<BasicRootNodeAccess> rootNodesToRemove = new ArrayList<>();
-                // Creating a consistent view of the root nodes
-                Set<BasicRootNodeAccess> rootNodesInConsistentHashingRingCopy = rootNodesPositionInConsistentHashingRing.keySet();
+                // Creating a consistent view of the root nodes.
+                // Adding the code in synchronized block to prevent synchronous access and modification, which  will cause
+                // an exception.
+                Set<BasicRootNodeAccess> rootNodesInConsistentHashingRingCopy;
+                synchronized (dataLock) {
+                    rootNodesInConsistentHashingRingCopy = rootNodesPositionInConsistentHashingRing.keySet();
+                }
 
                 for (var rootNode : rootNodesInConsistentHashingRingCopy) {
                     long timeDifference = Duration.between(rootNodesHeartBeat.get(rootNode), LocalDateTime.now()).getSeconds();
@@ -85,7 +91,13 @@ public class ProxyServer implements RequestProxy, ElevatedProxyServer {
     @Override
     public void write(LocalDateTime physicalTimestamp, String key, String value) throws AllShardsUnavailableException,
             ShardWriteFailedException, RootNodeDownException {
-        TreeMap<Integer, BasicRootNodeAccess> consistentHashingRootNodeCopy = new TreeMap<> (consistentHashingRootNode);
+        TreeMap<Integer, BasicRootNodeAccess> consistentHashingRootNodeCopy;
+        // Adding this code in synchronized block to prevent synchronous access and modification, which will cause
+        // an exception.
+        synchronized (dataLock) {
+            consistentHashingRootNodeCopy = new TreeMap<> (consistentHashingRootNode);
+        }
+
         if (consistentHashingRootNodeCopy.isEmpty()) {
             // If there are no root nodes that are active, then in this case we are stopping the proxy server
             stoppingTheProxyServer();
@@ -113,7 +125,13 @@ public class ProxyServer implements RequestProxy, ElevatedProxyServer {
     @Override
     public void delete(LocalDateTime physicalTimestamp, String key) throws AllShardsUnavailableException,
             ShardWriteFailedException ,RootNodeDownException {
-        TreeMap<Integer, BasicRootNodeAccess> consistentHashingRootNodeCopy = new TreeMap<> (consistentHashingRootNode);
+        TreeMap<Integer, BasicRootNodeAccess> consistentHashingRootNodeCopy;
+        // Adding this code in synchronized block to prevent synchronous access and modification, which will cause
+        // an exception.
+        synchronized (dataLock) {
+            consistentHashingRootNodeCopy = new TreeMap<> (consistentHashingRootNode);
+        }
+
         if (consistentHashingRootNodeCopy.isEmpty()) {
             // If there are no root nodes that are active, then in this case we are stopping the proxy server
             stoppingTheProxyServer();
@@ -140,7 +158,13 @@ public class ProxyServer implements RequestProxy, ElevatedProxyServer {
 
     @Override
     public String get(String key) throws AllShardsUnavailableException, DataNotFoundException, RootNodeDownException {
-        TreeMap<Integer, BasicRootNodeAccess> consistentHashingRootNodeCopy = new TreeMap<> (consistentHashingRootNode);
+        TreeMap<Integer, BasicRootNodeAccess> consistentHashingRootNodeCopy;
+        // Adding this code in synchronized block to prevent synchronous access and modification, which will cause
+        // an exception.
+        synchronized (dataLock) {
+            consistentHashingRootNodeCopy = new TreeMap<> (consistentHashingRootNode);
+        }
+
         if (consistentHashingRootNodeCopy.isEmpty()) {
             // If there are no root nodes that are active, then in this case we are stopping the proxy server
             stoppingTheProxyServer();
@@ -224,7 +248,12 @@ public class ProxyServer implements RequestProxy, ElevatedProxyServer {
     }
 
     private List<BasicRootNodeAccess> getReplicationFactorNumberOfRootNode(int positionInConsistentHashingRing) {
-        TreeMap<Integer, BasicRootNodeAccess> consistentHashingRootNodeCopy = new TreeMap<>(consistentHashingRootNode);
+        TreeMap<Integer, BasicRootNodeAccess> consistentHashingRootNodeCopy;
+        // Adding this code in synchronized block to prevent synchronous access and modification, which will cause
+        // an exception.
+        synchronized (dataLock) {
+            consistentHashingRootNodeCopy = new TreeMap<> (consistentHashingRootNode);
+        }
         List<BasicRootNodeAccess> rootNodes = new ArrayList<>(consistentHashingRootNodeCopy
                 .tailMap(positionInConsistentHashingRing, false).values().stream()
                 .limit(ProxyServerConfig.replicationFactor).toList());
@@ -237,16 +266,28 @@ public class ProxyServer implements RequestProxy, ElevatedProxyServer {
         return rootNodes;
     }
 
-    private void initiatingRootNode(BasicRootNodeAccess rootNode) {
+    private void addRootNode(BasicRootNodeAccess rootNode, int positionInConsistentHashingRing) {
+        synchronized (dataLock) {
+            consistentHashingRootNode.put(positionInConsistentHashingRing, rootNode);
+            rootNodesPositionInConsistentHashingRing.put(rootNode, positionInConsistentHashingRing);
+        }
+    }
+
+    private synchronized void initiatingRootNode(BasicRootNodeAccess rootNode) {
         System.out.printf("[ProxyServer]: Initiating the root node: %s\n", rootNode.getRootNodeName());
-        TreeMap<Integer, BasicRootNodeAccess> consistentHashingRootNodeCopy = new TreeMap<> (consistentHashingRootNode);
-        int positionInConsistentHashingRing = getPositionInConsistentHashingRing(rootNode.getRootNodeName());
+        TreeMap<Integer, BasicRootNodeAccess> consistentHashingRootNodeCopy;
+        // Adding this code in synchronized block to prevent synchronous access and modification, which will cause
+        // an exception.
+        synchronized (dataLock) {
+            consistentHashingRootNodeCopy = new TreeMap<> (consistentHashingRootNode);
+        }
+        int positionInConsistentHashingRing = getPositionInConsistentHashingRing(consistentHashingRootNodeCopy,
+                rootNode.getRootNodeName());
         // If the consistent hashing ring is empty, then we add this root node and return
         if (consistentHashingRootNodeCopy.isEmpty()) {
             System.out.printf("[ProxyServer]: The consistent hashing node is empty, so adding the root node and returning " +
                     "for the root node: %s\n", rootNode.getRootNodeName());
-            consistentHashingRootNode.put(positionInConsistentHashingRing, rootNode);
-            rootNodesPositionInConsistentHashingRing.put(rootNode, positionInConsistentHashingRing);
+            addRootNode(rootNode, positionInConsistentHashingRing);
             return;
         }
         System.out.println("[ProxyServer]: Starting the replication of data from the next and previous root node");
@@ -285,8 +326,7 @@ public class ProxyServer implements RequestProxy, ElevatedProxyServer {
         asyncReplicationFromNeighbouringNode.createTaskForReplicationFromPreviousRootNodeAndEnqueue(rootNode, previousRootNode);
         // After starting the replication of data from the next and previous root node to get the latest data, we add
         // the root node to the consistent hashing.
-        consistentHashingRootNode.put(positionInConsistentHashingRing, rootNode);
-        rootNodesPositionInConsistentHashingRing.put(rootNode, positionInConsistentHashingRing);
+        addRootNode(rootNode, positionInConsistentHashingRing);
     }
 
     private Map.Entry<Integer, BasicRootNodeAccess> getNextRootNode(
@@ -322,9 +362,11 @@ public class ProxyServer implements RequestProxy, ElevatedProxyServer {
     }
 
     private void removeRootNode(BasicRootNodeAccess rootNode) {
-        int positionInConsistentHashingRing = rootNodesPositionInConsistentHashingRing.get(rootNode);
-        rootNodesPositionInConsistentHashingRing.remove(rootNode);
-        consistentHashingRootNode.remove(positionInConsistentHashingRing);
+        synchronized (dataLock) {
+            int positionInConsistentHashingRing = rootNodesPositionInConsistentHashingRing.get(rootNode);
+            rootNodesPositionInConsistentHashingRing.remove(rootNode);
+            consistentHashingRootNode.remove(positionInConsistentHashingRing);
+        }
         rootNodesStatus.put(rootNode, false);
 
         if (checkIfAllRootNodesAreDown()) {
@@ -333,12 +375,18 @@ public class ProxyServer implements RequestProxy, ElevatedProxyServer {
     }
 
     private boolean checkIfAllRootNodesAreDown() {
-        return consistentHashingRootNode.isEmpty();
+        synchronized (dataLock) {
+            return consistentHashingRootNode.isEmpty();
+        }
     }
 
     private void printShardDetails() {
+        TreeMap<Integer, BasicRootNodeAccess> consistentHashingRootNodeCopy;
+        synchronized (dataLock) {
+            consistentHashingRootNodeCopy = new TreeMap<>(consistentHashingRootNode);
+        }
         System.out.println("Shard Details");
-        for (var entry : consistentHashingRootNode.entrySet()) {
+        for (var entry : consistentHashingRootNodeCopy.entrySet()) {
             int positionInconsistentHashingRing = entry.getKey();
             BasicRootNodeAccess rootNode = entry.getValue();
             System.out.println(rootNode.getRootNodeName() + " " + positionInconsistentHashingRing);
@@ -351,18 +399,19 @@ public class ProxyServer implements RequestProxy, ElevatedProxyServer {
             rootNodesHeartBeat.put(rootNode, LocalDateTime.now());
             rootNodesStatus.put(rootNode, true);
             String currentRootNodeName = rootNode.getRootNodeName();
-            int positionInConsistentHashingRing = getPositionInConsistentHashingRing(currentRootNodeName);
+            int positionInConsistentHashingRing = getPositionInConsistentHashingRing(consistentHashingRootNode, currentRootNodeName);
             consistentHashingRootNode.put(positionInConsistentHashingRing, rootNode);
             rootNodesPositionInConsistentHashingRing.put(rootNode, positionInConsistentHashingRing);
         }
     }
 
-    private int getPositionInConsistentHashingRing(String rootNodeName) {
+    private int getPositionInConsistentHashingRing(TreeMap<Integer, BasicRootNodeAccess> consistentHashingRootNodeCopy,
+                                                   String rootNodeName) {
         int attempt = 1;
         int finalPositionInConsistentHashingRing;
         while (true) {
             int positionInConsistentHashingRing = HashingHelper.hash(rootNodeName);
-            if (!consistentHashingRootNode.containsKey(positionInConsistentHashingRing)) {
+            if (!consistentHashingRootNodeCopy.containsKey(positionInConsistentHashingRing)) {
                 finalPositionInConsistentHashingRing = positionInConsistentHashingRing;
                 break;
             }
