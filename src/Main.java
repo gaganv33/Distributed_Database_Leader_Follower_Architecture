@@ -10,7 +10,7 @@ import java.time.LocalDateTime;
 
 public class Main {
     public static void main(String[] args) throws InterruptedException {
-        RequestProxy requestProxy = new ProxyServer(6);
+        RequestProxy requestProxy = new ProxyServer(10);
 
         while (true) {
             try {

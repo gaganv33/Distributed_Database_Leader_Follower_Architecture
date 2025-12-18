@@ -37,6 +37,7 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
     private final AsyncReplicationService asyncReplicationService;
     private Thread updateHeartBeatProxyServer;
     private final ElevatedProxyServer proxyServer;
+    private final Object dataLock = new Object();
 
     public RootNode(int rootNodeId, int numberOfDatabaseNodes, ElevatedProxyServer proxyServer) {
         this.rootNodeId = rootNodeId;
@@ -74,7 +75,10 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
                 // Checking heart beat for all the follower database nodes
                 List<FollowerDatabaseNodeAccess> followerDatabaseNodesToRemove = new ArrayList<>();
                 // Creating a consistent view of the follower database nodes
-                List<FollowerDatabaseNodeAccess> followerDatabaseNodesCopy = new ArrayList<>(followerDatabaseNodes);
+                List<FollowerDatabaseNodeAccess> followerDatabaseNodesCopy;
+                synchronized (dataLock) {
+                    followerDatabaseNodesCopy = new ArrayList<>(followerDatabaseNodes);
+                }
 
                 for (var databaseNode : followerDatabaseNodesCopy) {
                     long timeDifference = Duration.between(databaseNodesHeartBeat.get((ElevatedDatabaseNodeAccess) databaseNode),
@@ -88,7 +92,10 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
                         databaseNodesStatus.put((ElevatedDatabaseNodeAccess) databaseNode, false);
                     }
                 }
-                followerDatabaseNodes.removeAll(followerDatabaseNodesToRemove);
+
+                synchronized (dataLock) {
+                    followerDatabaseNodes.removeAll(followerDatabaseNodesToRemove);
+                }
 
                 // Checking heart beat for the leader database node
                 long timeDifference = Duration.between(databaseNodesHeartBeat.get((ElevatedDatabaseNodeAccess) leaderDatabaseNode),
@@ -131,7 +138,10 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
         if (LogsConfig.isGetOperationRootNodeLoggingEnabled) {
             System.out.printf("[%s]: Get request for key: %s\n", this.rootNodeName, key);
         }
-        List<FollowerDatabaseNodeAccess> followerDatabaseNodeCopy = new ArrayList<>(followerDatabaseNodes);
+        List<FollowerDatabaseNodeAccess> followerDatabaseNodeCopy;
+        synchronized (dataLock) {
+            followerDatabaseNodeCopy = new ArrayList<>(followerDatabaseNodes);
+        }
 
         if (followerDatabaseNodeCopy.isEmpty()) {
             allDatabaseNodesAreDown();
@@ -216,7 +226,9 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
                         databaseNode.getDatabaseNodeName());
             }
             databaseNodesStatus.put(databaseNode, true);
-            followerDatabaseNodes.add(databaseNode);
+            synchronized (dataLock) {
+                followerDatabaseNodes.add(databaseNode);
+            }
             if (!isActive) {
                 startingRootNode();
             }
@@ -228,7 +240,11 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
         if (LogsConfig.isExtraLoggingEnabled) {
             System.out.printf("[%s]: Replicating data across all the database nodes\n", this.rootNodeName);
         }
-        for (var followerDatabaseNode : followerDatabaseNodes) {
+        List<FollowerDatabaseNodeAccess> followerDatabaseNodesCopy;
+        synchronized (dataLock) {
+            followerDatabaseNodesCopy = new ArrayList<>(followerDatabaseNodes);
+        }
+        for (var followerDatabaseNode : followerDatabaseNodesCopy) {
             try {
                 ((ElevatedDatabaseNodeAccess) followerDatabaseNode).replicateData(temporaryLogData);
             } catch (DatabaseNodeInActiveException e) {
@@ -243,7 +259,14 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
     @Override
     public void replicationOfDataBetweenDatabaseNodes(ElevatedDatabaseNodeAccess databaseNode) {
         Runnable runnable = () -> {
-            if (followerDatabaseNodes.isEmpty()) {
+            // Creating a copy of the follower database nodes, so that we work on a consistent view of the follower
+            // database nodes. Since, there might be another thread, which will remove follower nodes which are inactive.
+            List<FollowerDatabaseNodeAccess> followerDatabaseNodesCopy;
+            synchronized (dataLock) {
+                followerDatabaseNodesCopy = new ArrayList<>(followerDatabaseNodes);
+            }
+
+            if (followerDatabaseNodesCopy.isEmpty()) {
                 throw new RootNodeDownException(String.format("[%s]: The root node is down, since all database nodes are down\n",
                         this.rootNodeName));
             }
@@ -272,10 +295,6 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
                 }
                 return;
             }
-
-            // Creating a copy of the follower database nodes, so that we work on a consistent view of the follower
-            // database nodes. Since, there might be another thread, which will remove follower nodes which are inactive.
-            List<FollowerDatabaseNodeAccess> followerDatabaseNodesCopy = new ArrayList<>(followerDatabaseNodes);
 
             int counter = 0;
             int totalFailedAttempts = 0;
@@ -434,7 +453,10 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
                 allDatabaseNodesAreDown();
                 return;
             }
-            List<FollowerDatabaseNodeAccess> followerDatabaseNodesCopy = new ArrayList<>(followerDatabaseNodes);
+            List<FollowerDatabaseNodeAccess> followerDatabaseNodesCopy;
+            synchronized (dataLock) {
+                followerDatabaseNodesCopy = new ArrayList<>(followerDatabaseNodes);
+            }
             if (LogsConfig.isExtraLoggingEnabled) {
                 System.out.printf("[%s]: Starting leader election process\n", this.rootNodeName);
             }
@@ -498,12 +520,16 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
     }
 
     private boolean checkIfAllTheFollowerDatabaseNodesAreDown() {
-        return followerDatabaseNodes.isEmpty();
+        synchronized (dataLock) {
+            return followerDatabaseNodes.isEmpty();
+        }
     }
 
     private void removeDatabaseNode(FollowerDatabaseNodeAccess databaseNode) {
         databaseNodesStatus.put((ElevatedDatabaseNodeAccess) databaseNode, false);
-        followerDatabaseNodes.remove(databaseNode);
+        synchronized (dataLock) {
+            followerDatabaseNodes.remove(databaseNode);
+        }
 
         if (checkIfAllTheFollowerDatabaseNodesAreDown()) {
             allDatabaseNodesAreDown();
