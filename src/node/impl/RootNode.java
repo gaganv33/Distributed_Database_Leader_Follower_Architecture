@@ -1,6 +1,5 @@
 package node.impl;
 
-import config.DatabaseNodeConfig;
 import config.LogsConfig;
 import config.RootNodeConfig;
 import data.DatabaseNodeType;
