@@ -119,7 +119,7 @@ public class RootNode implements ElevatedRootNodeAccess, BasicRootNodeAccess {
             System.out.printf("[%s]: Starting a thread to update the heart beat in proxy server\n", this.rootNodeName);
             while (true) {
                 try {
-                    Thread.sleep(DatabaseNodeConfig.cooldownTimeForUpdatingHeartBeat);
+                    Thread.sleep(RootNodeConfig.cooldownTimeForUpdatingHeartBeat);
                 } catch (InterruptedException e) {
                     System.out.printf("[%s]: Updating the heart beat thread is stopped\n", this.rootNodeName);
                     Thread.currentThread().interrupt();
